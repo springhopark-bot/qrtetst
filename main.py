@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 
 app = FastAPI(title="Kiosk Payment Service")
 
-# 결제 상태 보관용 메모리
+# 결제 상태 보관용 메모리 (시연 및 단일 세션용)
 latest_payment = {
     "status": "PENDING",
     "amount": 0,
@@ -12,7 +12,7 @@ latest_payment = {
     "card_no": ""
 }
 
-# 1. 키오스크 메인 웹 화면 (QR 생성 로직 추가)
+# 1. 키오스크 메인 웹 화면 (충전 옵션 선택 + QR 생성 + 결과 연출)
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     return """<!DOCTYPE html>
@@ -41,7 +41,7 @@ async def read_root():
         
         /* QR 및 결제 진행 박스 */
         .status-box { display: none; margin-top: 25px; padding: 20px; border-radius: 12px; background: #f8f9fa; border: 1px solid #e9ecef; }
-        .qr-img { width: 200px; height: 200px; margin: 15px auto; border: 4px solid #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .qr-img { width: 200px; height: 200px; margin: 15px auto; border: 4px solid #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: block; }
         .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; display: inline-block; vertical-align: middle; margin-right: 8px; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
@@ -122,7 +122,7 @@ async def read_root():
     async function startPayment() {
         await fetch('/api/payment/reset', { method: 'POST' });
         
-        // 시연용 QR 코드 생성 (실제 KICC 연동 시 KICC에서 받은 QR URL을 넣으면 됩니다)
+        // QR 코드 이미지 생성 API 호출
         const qrData = encodeURIComponent(`KICC_PAYMENT_URL?amount=${selectedAmount}&volume=${selectedVolume}`);
         document.getElementById('qrImage').src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${qrData}`;
         
@@ -130,7 +130,7 @@ async def read_root():
         document.getElementById('resultBox').style.display = 'none';
         document.getElementById('payStartBtn').style.display = 'none';
         
-        // 1초마다 백엔드 결제 상태 체크
+        // 1초 간격으로 결제 웹훅 수신 여부 폴링
         pollInterval = setInterval(checkPaymentStatus, 1000);
     }
 
@@ -176,4 +176,42 @@ async def read_root():
 </body>
 </html>"""
 
-# 2. KICC 결제 노티(웹훅) 수신
+# 2. KICC 결제 노티(웹훅) 수신 엔드포인트
+@app.post("/api/kicc/webhook")
+async def kicc_webhook(request: Request):
+    global latest_payment
+    
+    # KICC에서 전송하는 Form 데이터 및 Body 파싱
+    form_data = await request.form()
+    
+    res_cd = form_data.get("res_cd", "0000")
+    card_name = form_data.get("card_name", form_data.get("card_comp_name", "신한카드"))
+    card_no = form_data.get("card_no", "4330-****-****-1234")
+    
+    if res_cd == "0000":
+        latest_payment["status"] = "SUCCESS"
+        latest_payment["card_name"] = card_name
+        latest_payment["card_no"] = card_no
+        
+        # KICC 필수 응답 포맷 (PlainText)
+        return Response(content="res_cd=0000&res_msg=SUCCESS", media_type="text/plain")
+    
+    return Response(content="res_cd=9999&res_msg=FAIL", media_type="text/plain")
+
+# 3. 프론트엔드 상태 체크용 API (Polling)
+@app.get("/api/payment/status")
+async def get_payment_status():
+    return latest_payment
+
+# 4. 결제 대기 상태 초기화 API
+@app.post("/api/payment/reset")
+async def reset_payment():
+    global latest_payment
+    latest_payment = {
+        "status": "PENDING",
+        "amount": 0,
+        "volume": "",
+        "card_name": "",
+        "card_no": ""
+    }
+    return {"result": "ok"}
