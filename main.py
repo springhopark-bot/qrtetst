@@ -11,7 +11,7 @@ app = FastAPI(title="Kiosk Payment Service")
 # --------------------------------------------------
 KICC_MID = "T0022488"                  # 예: T5102001
 KICC_SECRET_KEY = "easypay!KICCTSET"    # KICC Secret / API Key
-KICC_API_HOST = "https://pgapi.easypay.co.kr" # KICC API 운영 도메인
+KICC_API_HOST = "https://testpgapi.easypay.co.kr" # KICC API 운영 도메인
 
 # 메모리 주문 저장소 및 결제 상태
 order_db = {}
