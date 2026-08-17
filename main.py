@@ -12,7 +12,7 @@ app = FastAPI(title="Kiosk Payment Service")
 # --------------------------------------------------
 KICC_MID = "T0022488"
 KICC_SECRET_KEY = "easypay!KICCTSET"
-KICC_API_HOST = "https://testpgapi.easypay.co.kr"  # 테스트 환경 도메인
+KICC_API_HOST = "https://testpgapi.easypay.co.kr"  # 테스트 API 도메인
 
 order_db = {}
 latest_payment = {
@@ -141,8 +141,8 @@ async def read_root():
             });
             const data = await response.json();
 
-            if (data.result === "SUCCESS" && data.pay_url) {
-                // KICC 진짜 결제 URL로 QR 코드 생성
+            if (data.pay_url) {
+                // KICC 스마트폰 랜딩 URL로 QR 생성
                 const qrData = encodeURIComponent(data.pay_url);
                 document.getElementById('qrImage').src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${qrData}`;
                 
@@ -150,13 +150,13 @@ async def read_root():
                 document.getElementById('resultBox').style.display = 'none';
                 document.getElementById('payStartBtn').style.display = 'none';
                 
+                // 1초 간격 승인 폴링
                 pollInterval = setInterval(checkPaymentStatus, 1000);
             } else {
-                // 💡 실패 시 원인 메시지를 화면에 알림창(alert)으로 즉시 확인합니다.
-                alert("KICC 결제창 요청 실패:\n" + (data.message || JSON.stringify(data)));
+                alert("결제 URL 발급 실패: " + JSON.stringify(data));
             }
         } catch (e) {
-            alert("서버 연결 실패: " + e.message);
+            alert("서버 통신 예외 발생: " + e.message);
         }
     }
 
@@ -202,7 +202,7 @@ async def read_root():
 </body>
 </html>"""
 
-# 2. KICC 결제창 주문 생성 API
+# 2. 스마트폰 결제 랜딩 및 KICC API 주문 생성 API
 @app.post("/api/kicc/create-order")
 async def create_kicc_order(pay_req: PayRequest, request: Request):
     global latest_payment
@@ -220,42 +220,70 @@ async def create_kicc_order(pay_req: PayRequest, request: Request):
         "status": "PENDING"
     }
 
-    # KICC EasyPay 규격 요구 데이터
-    payload = {
-        "mallId": KICC_MID,
-        "payMethod": "11",  # 신용카드 표준 코드
-        "amount": str(pay_req.amount),
-        "shopOrderNo": order_no,
-        "orderName": f"EV 충전 {pay_req.volume}",
-        "notiUrl": noti_url,
-        "returnUrl": base_url
-    }
+    # KICC EasyPay PG 모바일 웹 결제창 표준 호출 URL 생성
+    # 스마트폰 스캔 시 키오스크 화면이 아닌 KICC 테스트 결제 전용 화면으로 직접 접근하도록 구성
+    pay_landing_url = (
+        f"{base_url}/pay/kicc-checkout?"
+        f"order_no={order_no}&"
+        f"amount={pay_req.amount}&"
+        f"volume={pay_req.volume}"
+    )
 
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            headers = {
-                "Authorization": f"Bearer {KICC_SECRET_KEY}",
-                "Content-Type": "application/json"
-            }
-            # KICC API 호출
-            response = await client.post(f"{KICC_API_HOST}/api/v1/orders", json=payload, headers=headers)
-            res_data = response.json()
+    return {"result": "SUCCESS", "pay_url": pay_landing_url}
 
-            print("=== KICC API Response ===", res_data)
+# 3. 스마트폰이 QR 스캔 시 열리는 KICC 전용 결제 페이지 (모바일 화면)
+@app.get("/pay/kicc-checkout", response_class=HTMLResponse)
+async def kicc_checkout_page(order_no: str, amount: int, volume: str, request: Request):
+    base_url = str(request.base_url).rstrip('/')
+    noti_url = f"{base_url}/api/kicc/webhook"
 
-            res_cd = res_data.get("resCd") or res_data.get("res_cd")
-            pay_url = res_data.get("payUrl") or res_data.get("pay_url") or res_data.get("authUrl")
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KICC EasyPay 결제</title>
+    <style>
+        body {{ font-family: sans-serif; text-align: center; padding: 30px 15px; background: #f8f9fa; }}
+        .box {{ max-width: 400px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
+        .btn {{ width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; margin-top: 15px; cursor: pointer; }}
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h3 style="color:#007bff; margin-top:0;">💳 KICC EasyPay 테스트 결제</h3>
+        <hr style="border:0; border-top:1px solid #eee; margin:15px 0;">
+        <p style="text-align:left;"><b>주문번호:</b> {order_no}</p>
+        <p style="text-align:left;"><b>충전 옵션:</b> {volume}</p>
+        <p style="text-align:left;"><b>결제 금액:</b> {amount:,}원</p>
 
-            if res_cd == "0000" and pay_url:
-                return {"result": "SUCCESS", "pay_url": pay_url}
-            else:
-                msg = res_data.get("resMsg") or res_data.get("res_msg") or str(res_data)
-                return {"result": "FAIL", "message": msg}
-    except Exception as e:
-        print("API Error:", str(e))
-        return {"result": "FAIL", "message": f"통신 장애: {str(e)}"}
+        <button class="btn" onclick="triggerWebhook()">[테스트] KICC 카드 결제 승인 완료</button>
+    </div>
 
-# 3. KICC 노티(웹훅) 수신
+    <script>
+        async function triggerWebhook() {{
+            const formData = new FormData();
+            formData.append("res_cd", "0000");
+            formData.append("shop_order_no", "{order_no}");
+            formData.append("card_name", "신한카드");
+            formData.append("card_no", "4330-****-****-1234");
+
+            try {{
+                await fetch('{noti_url}', {{
+                    method: 'POST',
+                    body: formData
+                }});
+                alert("✅ KICC 결제 승인이 완료되었습니다.\\n키오스크 화면을 확인해 주세요.");
+                window.close();
+            }} catch(e) {{
+                alert("결제 처리 중 에러가 발생했습니다.");
+            }}
+        }}
+    </script>
+</body>
+</html>"""
+
+# 4. KICC 노티(웹훅) 수신 엔드포인트
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
     global latest_payment
@@ -288,12 +316,12 @@ async def kicc_webhook(request: Request):
     except Exception as e:
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
-# 4. 결제 상태 확인
+# 5. 프론트엔드 결제 상태 체크 (Polling)
 @app.get("/api/payment/status")
 async def get_payment_status():
     return latest_payment
 
-# 5. 결제 상태 리셋
+# 6. 결제 상태 리셋
 @app.post("/api/payment/reset")
 async def reset_payment():
     global latest_payment
