@@ -12,7 +12,7 @@ latest_payment = {
     "card_no": ""
 }
 
-# 1. 키오스크 메인 웹 화면 (충전 옵션 선택 + QR 생성 + 결과 연출)
+# 1. 키오스크 메인 웹 화면 (충전 옵션 선택 + 올바른 QR 생성 + 결과 연출)
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     return """<!DOCTYPE html>
@@ -85,7 +85,7 @@ async def read_root():
     <button id="payStartBtn" class="pay-btn" onclick="startPayment()">결제 및 충전 시작</button>
 
     <div id="statusBox" class="status-box">
-        <h4 style="margin:0; color:#333;">스마트폰 앱카드로 스캔하세요</h4>
+        <h4 style="margin:0; color:#333;">스마트폰 카메라/앱카드로 스캔하세요</h4>
         <img id="qrImage" class="qr-img" src="" alt="결제 QR코드">
         <p style="margin: 5px 0 0 0; font-size: 14px; color: #495057; font-weight: 600;">
             <span class="spinner"></span>KICC 결제 승인 수신 대기 중...
@@ -122,8 +122,11 @@ async def read_root():
     async function startPayment() {
         await fetch('/api/payment/reset', { method: 'POST' });
         
-        // QR 코드 이미지 생성 API 호출
-        const qrData = encodeURIComponent(`KICC_PAYMENT_URL?amount=${selectedAmount}&volume=${selectedVolume}`);
+        // 현재 접속 중인 도메인(예: https://qrtetst.onrender.com)을 자동으로 파악하여 유효한 랜딩 URL QR 생성
+        const currentDomain = window.location.origin;
+        const targetUrl = `${currentDomain}/?amount=${selectedAmount}&volume=${selectedVolume}`;
+        const qrData = encodeURIComponent(targetUrl);
+        
         document.getElementById('qrImage').src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${qrData}`;
         
         document.getElementById('statusBox').style.display = 'block';
@@ -181,7 +184,7 @@ async def read_root():
 async def kicc_webhook(request: Request):
     global latest_payment
     
-    # KICC에서 전송하는 Form 데이터 및 Body 파싱
+    # KICC에서 전송하는 Form 데이터 파싱
     form_data = await request.form()
     
     res_cd = form_data.get("res_cd", "0000")
