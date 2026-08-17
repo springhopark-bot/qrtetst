@@ -1,19 +1,12 @@
 import json
 import time
-import httpx
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 
 app = FastAPI(title="Kiosk Payment Service")
 
-# --------------------------------------------------
-# 🔑 KICC 테스트 연동 설정
-# --------------------------------------------------
-KICC_MID = "T0022488"
-KICC_SECRET_KEY = "easypay!KICCTSET"
-KICC_API_HOST = "https://testpgapi.easypay.co.kr"
-
+# 메모리 데이터베이스 및 상태 관리
 order_db = {}
 latest_payment = {
     "status": "PENDING",
@@ -142,7 +135,6 @@ async def read_root():
             const data = await response.json();
 
             if (data.pay_url) {
-                // 완전히 분리된 QR 스캔 전용 랜딩 URL로 QR 생성
                 const qrData = encodeURIComponent(data.pay_url);
                 document.getElementById('qrImage').src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${qrData}`;
                 
@@ -150,9 +142,8 @@ async def read_root():
                 document.getElementById('resultBox').style.display = 'none';
                 document.getElementById('payStartBtn').style.display = 'none';
                 
+                if(pollInterval) clearInterval(pollInterval);
                 pollInterval = setInterval(checkPaymentStatus, 1000);
-            } else {
-                alert("QR 생성 실패: " + JSON.stringify(data));
             }
         } catch (e) {
             alert("서버 연결 실패: " + e.message);
@@ -201,31 +192,30 @@ async def read_root():
 </body>
 </html>"""
 
-# 2. QR 코드 주문 발급 API
+# 2. 주문 번호 생성 및 랜딩 페이지 URL 반환
 @app.post("/api/kicc/create-order")
 async def create_kicc_order(pay_req: PayRequest, request: Request):
     global latest_payment
     latest_payment["amount"] = pay_req.amount
     latest_payment["volume"] = pay_req.volume
     
-    # 랜딩 주소의 도메인을 절대경로로 추출
     host_url = str(request.base_url).rstrip('/')
-    
     order_no = f"ORD{int(time.time())}"
+    
     order_db[order_no] = {
         "amount": pay_req.amount,
         "volume": pay_req.volume,
         "status": "PENDING"
     }
 
-    # 스캔 전용 별도 엔드포인트(/kicc-pay)로 QR 지정
-    target_pay_url = f"{host_url}/kicc-pay?order_no={order_no}&amount={pay_req.amount}&volume={pay_req.volume}"
+    # QR스캔 전용 랜딩 URL 지정 (/pay-landing)
+    target_pay_url = f"{host_url}/pay-landing?order_no={order_no}&amount={pay_req.amount}&volume={pay_req.volume}"
 
     return {"result": "SUCCESS", "pay_url": target_pay_url}
 
-# 3. [핵심] 스마트폰 QR 스캔 전용 독립 결제창 랜딩 페이지
-@app.get("/kicc-pay", response_class=HTMLResponse)
-async def kicc_pay_landing(order_no: str, amount: int, volume: str, request: Request):
+# 3. 모바일 전용 결제 페이지 (/pay-landing)
+@app.get("/pay-landing", response_class=HTMLResponse)
+async def pay_landing_page(order_no: str, amount: int, volume: str, request: Request):
     base_url = str(request.base_url).rstrip('/')
     noti_url = f"{base_url}/api/kicc/webhook"
 
@@ -234,58 +224,47 @@ async def kicc_pay_landing(order_no: str, amount: int, volume: str, request: Req
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>KICC PG 결제 승인</title>
+    <title>KICC 카드 결제 창</title>
     <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #eef2f5; margin: 0; padding: 25px 15px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }}
-        .card {{ background: white; width: 100%; max-width: 380px; border-radius: 16px; padding: 25px 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); text-align: center; }}
-        .badge {{ display: inline-block; background: #e3f2fd; color: #0d47a1; font-weight: bold; font-size: 13px; padding: 6px 12px; border-radius: 20px; margin-bottom: 15px; }}
-        h3 {{ margin: 0 0 20px 0; color: #111; font-size: 20px; }}
-        .info-group {{ background: #f8f9fa; border-radius: 10px; padding: 15px; text-align: left; margin-bottom: 20px; line-height: 1.8; font-size: 14px; color: #444; }}
-        .info-group p {{ margin: 0; display: flex; justify-content: space-between; }}
-        .info-group span.val {{ font-weight: bold; color: #111; }}
-        .pay-btn {{ width: 100%; background: #007bff; color: white; border: none; padding: 16px; border-radius: 12px; font-weight: bold; font-size: 16px; cursor: pointer; box-shadow: 0 4px 12px rgba(0,123,255,0.3); }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f8; margin:0; padding:20px; text-align: center; }}
+        .box {{ background: white; border-radius: 16px; padding: 25px 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); max-width: 360px; margin: 30px auto 0 auto; }}
+        h3 {{ color: #007bff; margin-top: 0; }}
+        .btn {{ width: 100%; padding: 16px; background: #28a745; color: white; border: none; border-radius: 10px; font-weight: bold; font-size: 16px; margin-top: 20px; cursor: pointer; }}
+        .info {{ text-align: left; background: #f8f9fa; padding: 12px 15px; border-radius: 8px; margin: 15px 0; font-size: 14px; line-height: 1.6; color: #333; }}
     </style>
 </head>
 <body>
-
-<div class="card">
-    <span class="badge">KICC EasyPay 테스트 결제</span>
-    <h3>💳 카드 결제 요청</h3>
-
-    <div class="info-group">
-        <p><span>주문번호</span><span class="val">{order_no}</span></p>
-        <p><span>충전량</span><span class="val">{volume}</span></p>
-        <p><span>결제금액</span><span class="val" style="color:#d32f2f;">{amount:,}원</span></p>
+    <div class="box">
+        <h3>💳 KICC EasyPay 결제</h3>
+        <div class="info">
+            <p style="margin:4px 0;"><b>주문번호:</b> {order_no}</p>
+            <p style="margin:4px 0;"><b>충전 옵션:</b> {volume}</p>
+            <p style="margin:4px 0;"><b>결제 금액:</b> {amount:,}원</p>
+        </div>
+        <button class="btn" onclick="sendApproval()">카드 결제 승인 요청</button>
     </div>
 
-    <button class="pay-btn" onclick="submitPayment()">KICC 카드결제 완료하기</button>
-</div>
+    <script>
+        async function sendApproval() {{
+            const formData = new FormData();
+            formData.append("res_cd", "0000");
+            formData.append("shop_order_no", "{order_no}");
+            formData.append("card_name", "신한카드");
+            formData.append("card_no", "4330-****-****-1234");
 
-<script>
-    async function submitPayment() {{
-        const formData = new FormData();
-        formData.append("res_cd", "0000");
-        formData.append("shop_order_no", "{order_no}");
-        formData.append("card_name", "신한카드");
-        formData.append("card_no", "4330-****-****-1234");
-
-        try {{
-            await fetch('{noti_url}', {{
-                method: 'POST',
-                body: formData
-            }});
-            alert("✅ 결제 승인이 완료되었습니다.\\n키오스크 화면을 확인해 주세요.");
-            document.body.innerHTML = "<h2 style='text-align:center; margin-top:50px; color:#28a745;'>✅ 결제 완료!<br><small style='font-size:14px; color:#666;'>창을 닫으셔도 됩니다.</small></h2>";
-        }} catch(e) {{
-            alert("결제 승인 수신 오류: " + e.message);
+            try {{
+                await fetch('{noti_url}', {{ method: 'POST', body: formData }});
+                alert("✅ 결제 승인이 완료되었습니다!");
+                document.body.innerHTML = "<h2 style='margin-top:50px; color:#28a745;'>✅ 결제가 정상 처리되었습니다.<br><small style='font-size:14px; color:#666;'>키오스크 화면을 확인해 주세요.</small></h2>";
+            }} catch(e) {{
+                alert("결제 전송 실패: " + e);
+            }}
         }}
-    }}
-</script>
-
+    </script>
 </body>
 </html>"""
 
-# 4. KICC 노티(웹훅) 수신
+# 4. KICC 웹훅 수신 (저번주 검증 코드 유지)
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
     global latest_payment
@@ -296,6 +275,9 @@ async def kicc_webhook(request: Request):
         else:
             form_data = await request.form()
             data = dict(form_data)
+
+        print("\n📥 === [KICC 웹훅 데이터 수신] ===")
+        print(json.dumps(data, indent=2, ensure_ascii=False))
 
         res_cd = data.get("resCd") or data.get("res_cd")
         shop_order_no = data.get("shopOrderNo") or data.get("shop_order_no") or data.get("order_no")
@@ -313,9 +295,10 @@ async def kicc_webhook(request: Request):
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
     except Exception as e:
+        print(f"❌ 웹훅 에러: {e}")
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
-# 5. 프론트엔드 승인 확인 (Polling)
+# 5. 프론트엔드 결제 확인
 @app.get("/api/payment/status")
 async def get_payment_status():
     return latest_payment
