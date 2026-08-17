@@ -12,7 +12,7 @@ latest_payment = {
     "card_no": ""
 }
 
-# 1. 키오스크 메인 웹 화면 (HTML + CSS + JS)
+# 1. 키오스크 메인 웹 화면 (QR 생성 로직 추가)
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     return """<!DOCTYPE html>
@@ -28,22 +28,21 @@ async def read_root():
         h2 { margin-top: 0; color: #1a1a1a; font-size: 24px; font-weight: 700; }
         .sub-text { color: #666; font-size: 15px; margin-bottom: 25px; }
         
-        /* 충전 옵션 버튼 그룹 */
         .btn-group { display: flex; gap: 12px; justify-content: center; margin-bottom: 12px; }
         .option-btn { flex: 1; padding: 16px 10px; border: 2px solid #e1e4e8; background: #fff; border-radius: 12px; cursor: pointer; font-weight: 600; font-size: 15px; color: #444; transition: all 0.2s ease; }
         .option-btn:hover { border-color: #007bff; color: #007bff; }
         .option-btn.active { background: #007bff; color: white; border-color: #007bff; box-shadow: 0 4px 12px rgba(0,123,255,0.3); }
         .price-text { font-size: 13px; opacity: 0.85; margin-top: 4px; font-weight: 400; }
         
-        /* 옵션 하단 부분취소 안내 멘트 */
         .notice-text { font-size: 12.5px; color: #888; margin-bottom: 24px; text-align: center; word-break: keep-all; line-height: 1.4; background: #f8f9fa; padding: 8px 12px; border-radius: 6px; }
         
         .pay-btn { width: 100%; padding: 18px; background: #28a745; color: white; font-size: 18px; font-weight: 700; border: none; border-radius: 12px; cursor: pointer; transition: background 0.2s ease; box-shadow: 0 4px 12px rgba(40,167,69,0.3); }
         .pay-btn:hover { background: #218838; }
         
-        /* KICC 웹훅 수신 대기 박스 */
+        /* QR 및 결제 진행 박스 */
         .status-box { display: none; margin-top: 25px; padding: 20px; border-radius: 12px; background: #f8f9fa; border: 1px solid #e9ecef; }
-        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 36px; height: 36px; animation: spin 1s linear infinite; margin: 15px auto; }
+        .qr-img { width: 200px; height: 200px; margin: 15px auto; border: 4px solid #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; display: inline-block; vertical-align: middle; margin-right: 8px; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
         /* 결제 완료 레이어 */
@@ -86,9 +85,11 @@ async def read_root():
     <button id="payStartBtn" class="pay-btn" onclick="startPayment()">결제 및 충전 시작</button>
 
     <div id="statusBox" class="status-box">
-        <div class="spinner"></div>
-        <p style="margin: 0; font-weight: 600; color: #495057;">KICC 결제 수신 대기 중...</p>
-        <p style="margin: 5px 0 0 0; font-size: 13px; color: #868e96;">QR을 스캔하여 결제를 완료해 주세요.</p>
+        <h4 style="margin:0; color:#333;">스마트폰 앱카드로 스캔하세요</h4>
+        <img id="qrImage" class="qr-img" src="" alt="결제 QR코드">
+        <p style="margin: 5px 0 0 0; font-size: 14px; color: #495057; font-weight: 600;">
+            <span class="spinner"></span>KICC 결제 승인 수신 대기 중...
+        </p>
     </div>
 
     <div id="resultBox" class="result-box">
@@ -121,10 +122,15 @@ async def read_root():
     async function startPayment() {
         await fetch('/api/payment/reset', { method: 'POST' });
         
+        // 시연용 QR 코드 생성 (실제 KICC 연동 시 KICC에서 받은 QR URL을 넣으면 됩니다)
+        const qrData = encodeURIComponent(`KICC_PAYMENT_URL?amount=${selectedAmount}&volume=${selectedVolume}`);
+        document.getElementById('qrImage').src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${qrData}`;
+        
         document.getElementById('statusBox').style.display = 'block';
         document.getElementById('resultBox').style.display = 'none';
         document.getElementById('payStartBtn').style.display = 'none';
         
+        // 1초마다 백엔드 결제 상태 체크
         pollInterval = setInterval(checkPaymentStatus, 1000);
     }
 
@@ -170,40 +176,4 @@ async def read_root():
 </body>
 </html>"""
 
-# 2. KICC 결제 노티(웹훅) 수신 API
-@app.post("/api/kicc/webhook")
-async def kicc_webhook(request: Request):
-    global latest_payment
-    
-    form_data = await request.form()
-    
-    res_cd = form_data.get("res_cd", "0000")
-    card_name = form_data.get("card_name", form_data.get("card_comp_name", "신한카드"))
-    card_no = form_data.get("card_no", "4330-****-****-1234")
-    
-    if res_cd == "0000":
-        latest_payment["status"] = "SUCCESS"
-        latest_payment["card_name"] = card_name
-        latest_payment["card_no"] = card_no
-        
-        return Response(content="res_cd=0000&res_msg=SUCCESS", media_type="text/plain")
-    
-    return Response(content="res_cd=9999&res_msg=FAIL", media_type="text/plain")
-
-# 3. 결제 상태 조회 API
-@app.get("/api/payment/status")
-async def get_payment_status():
-    return latest_payment
-
-# 4. 결제 상태 리셋 API
-@app.post("/api/payment/reset")
-async def reset_payment():
-    global latest_payment
-    latest_payment = {
-        "status": "PENDING",
-        "amount": 0,
-        "volume": "",
-        "card_name": "",
-        "card_no": ""
-    }
-    return {"result": "ok"}
+# 2. KICC 결제 노티(웹훅) 수신
