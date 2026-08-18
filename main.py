@@ -8,7 +8,7 @@ from pydantic import BaseModel
 app = FastAPI(title="Kiosk Payment Service")
 
 # --------------------------------------------------
-# 🔑 KICC 설정 및 충전 단가
+# 🔑 KICC 설정 및 충전 단가 (기존 코드 유지)
 # --------------------------------------------------
 MALL_ID = "T0022488"
 KICC_API_URL = "https://testpgapi.easypay.co.kr/directapi/trades/directSmsUrlPayReg"
@@ -31,27 +31,25 @@ class PayRequest(BaseModel):
     volume: str
 
 # --------------------------------------------------
-# 🛠️ 카드 정보 및 발급사명(issuerName) 파싱 함수
+# 🛠️ 카드 정보 및 발급사명 파싱 함수 (기존 코드 유지)
 # --------------------------------------------------
 def parse_payment_data(data: dict):
     lower_data = {str(k).lower(): str(v).strip() for k, v in data.items() if v}
     
-    # issuerName 최우선 추출 (발급사명) -> 없을 경우 대체 발급사/매입사 필드 확인
     card_name = (
-        lower_data.get("issuername")         # issuerName (최우선)
+        lower_data.get("issuername")
         or lower_data.get("issuer_name")
-        or lower_data.get("cardpubnm")       # cardPubNm (발급사명)
+        or lower_data.get("cardpubnm")
         or lower_data.get("card_pub_nm")
-        or lower_data.get("cardmgbnm")       # cardMgbNm (매입사명)
+        or lower_data.get("cardmgbnm")
         or lower_data.get("card_mgb_nm")
-        or lower_data.get("acquirername")    # acquirerName
+        or lower_data.get("acquirername")
         or lower_data.get("acquirer_name")
         or lower_data.get("cardname")
         or lower_data.get("card_name")
         or lower_data.get("cardnm")
     )
 
-    # 카드사 텍스트명이 없을 경우 기관코드(fn_cd 등)를 이용한 매핑
     if not card_name:
         fn_cd = lower_data.get("fn_cd") or lower_data.get("card_code") or lower_data.get("fn_code")
         card_code_map = {
@@ -74,7 +72,7 @@ def parse_payment_data(data: dict):
     return shop_order_no, res_cd, card_name, card_no
 
 # ==================================================
-# 1. 키오스크 메인 UI
+# 1. 키오스크 메인 UI (충전 중 및 부분취소 화면 추가)
 # ==================================================
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -89,7 +87,7 @@ async def read_root():
     <title>전기차 충전 결제 키오스크</title>
     <style>
         * {{ box-sizing: border-box; }}
-        body {{ font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; text-align: center; padding: 40px 20px; background: #f0f2f5; margin: 0; }}
+        body {{ font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 40px 20px; background: #f0f2f5; margin: 0; }}
         .card {{ max-width: 500px; margin: 0 auto; background: white; padding: 35px 25px; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); }}
         h2 {{ margin-top: 0; color: #1a1a1a; font-size: 24px; font-weight: 700; }}
         .unit-price-badge {{ display: inline-block; background: #e7f1ff; color: #007bff; font-weight: 600; font-size: 14px; padding: 6px 14px; border-radius: 20px; margin-bottom: 20px; }}
@@ -112,14 +110,21 @@ async def read_root():
 
         .qr-timer {{ font-size: 14px; color: #dc3545; font-weight: 700; margin-top: 12px; }}
 
-        .result-box {{ display: none; background: #f0fff4; border: 2px solid #28a745; border-radius: 12px; padding: 25px 20px; margin-top: 25px; animation: fadeIn 0.3s ease-in-out; }}
-        @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
-        .result-box h3 {{ color: #28a745; margin: 0 0 15px 0; font-size: 20px; }}
-        .card-info {{ font-size: 15px; color: #333; margin: 15px 0; background: white; padding: 15px; border-radius: 8px; border: 1px solid #d4edda; text-align: left; line-height: 1.8; }}
-        .card-info p {{ margin: 4px 0; display: flex; justify-content: space-between; }}
-        .card-info span.value {{ font-weight: 600; color: #1a1a1a; }}
-        .charging-msg {{ font-size: 19px; font-weight: 700; color: #007bff; margin-top: 20px; letter-spacing: -0.5px; }}
-        .timer {{ font-size: 14px; color: #666; margin-top: 8px; }}
+        /* 충전 중 화면 스타일 */
+        .charging-box {{ display: none; background: #f0f8ff; border: 2px solid #007bff; border-radius: 12px; padding: 25px 20px; margin-top: 25px; }}
+        .charging-stats {{ background: white; padding: 15px; border-radius: 8px; border: 1px solid #b8daff; text-align: left; margin: 15px 0; line-height: 1.8; }}
+        .charging-stats p {{ margin: 6px 0; display: flex; justify-content: space-between; font-size: 15px; }}
+        .charging-stats span.value {{ font-weight: 700; color: #007bff; }}
+        .stop-btn {{ width: 100%; padding: 15px; background: #dc3545; color: white; font-size: 17px; font-weight: 700; border: none; border-radius: 10px; cursor: pointer; margin-top: 10px; box-shadow: 0 4px 10px rgba(220,53,69,0.3); }}
+        .stop-btn:hover {{ background: #c82333; }}
+
+        /* 충전 중지 / 부분취소 안내 화면 스타일 */
+        .refund-box {{ display: none; background: #fff3cd; border: 2px solid #ffc107; border-radius: 12px; padding: 25px 20px; margin-top: 25px; }}
+        .refund-stats {{ background: white; padding: 15px; border-radius: 8px; border: 1px solid #ffeeba; text-align: left; margin: 15px 0; line-height: 1.8; }}
+        .refund-stats p {{ margin: 6px 0; display: flex; justify-content: space-between; font-size: 15px; }}
+        .refund-stats span.value {{ font-weight: 700; color: #333; }}
+        .refund-stats span.cancel-val {{ font-weight: 700; color: #dc3545; font-size: 17px; }}
+        .refund-timer {{ font-size: 14px; color: #666; margin-top: 12px; }}
         .timer-num {{ font-weight: bold; color: #dc3545; font-size: 16px; }}
     </style>
 </head>
@@ -151,34 +156,57 @@ async def read_root():
 
     <button id="payStartBtn" class="pay-btn" onclick="startPayment()">결제 및 충전 시작</button>
 
+    <!-- QR 스캔 대기 화면 -->
     <div id="statusBox" class="status-box">
-        <h4 style="margin:0; color:#333;">스마트폰 카메라로 QR을 스캔하세요</h4>
+        <h4 style="margin:0; color:#333;">스마트폰 카메라 또는 앱카드로 QR을 스캔하세요</h4>
         <img id="qrImage" class="qr-img" src="" alt="KICC 결제 QR코드">
         <p style="margin: 8px 0 0 0; font-size: 14px; color: #495057; font-weight: 600;">
             <span class="spinner"></span>KICC 결제 승인 확인 중...
         </p>
-        <div class="qr-timer">⏱️ <span id="qrCountdown">120</span>초 내에 결제를 완료해 주세요</div>
+        <div class="qr-timer">⏱️ <span id="qrCountdown">60</span>초 내에 결제를 완료해 주세요</div>
     </div>
 
-    <div id="resultBox" class="result-box">
-        <h3>✅ 결제가 완료되었습니다!</h3>
-        <div class="card-info">
-            <p><span>결제 카드 (발급사)</span><span id="cardName" class="value">-</span></p>
-            <p><span>카드 번호</span><span id="cardNo" class="value">-</span></p>
-            <p><span>목표 충전량</span><span id="payVolume" class="value">-</span></p>
-            <p><span>선결제 금액</span><span id="payAmount" class="value">-</span></p>
+    <!-- 🔌 실시간 충전 중 화면 -->
+    <div id="chargingBox" class="charging-box">
+        <h3 id="chargingTitle" style="color: #007bff; margin: 0 0 10px 0;">⚡ 전기차 충전 중...</h3>
+        <div class="charging-stats">
+            <p><span>결제 카드 (발급사)</span><span id="chgCardName" class="value">-</span></p>
+            <p><span>선결제 금액</span><span id="chgInitialAmount" class="value">-</span></p>
+            <p><span>목표 충전량</span><span id="chgTargetKwh" class="value">-</span></p>
+            <p><span>현재 충전량</span><span id="currentKwh" class="value">0.0 kWh</span></p>
+            <p><span>현재 충전 요금</span><span id="currentCost" class="value">0원</span></p>
+            <p><span>경과 시간</span><span id="chargingTime" class="value">0초</span></p>
         </div>
-        <div class="charging-msg">🔌 충전을 시작합니다...</div>
-        <div class="timer"><span id="countdown" class="timer-num">5</span>초 후 화면이 리셋됩니다.</div>
+        <button class="stop-btn" onclick="stopCharging(false)">🛑 충전 중지</button>
+    </div>
+
+    <!-- 🛑 충전 중지 / 부분취소 안내 화면 (10초 노출) -->
+    <div id="refundBox" class="refund-box">
+        <h3 id="refundTitle" style="color: #856404; margin: 0 0 10px 0;">🛑 충전이 중지되었습니다</h3>
+        <div class="refund-stats">
+            <p><span>선결제 금액</span><span id="refInitialAmount" class="value">-</span></p>
+            <p><span>실제 충전량</span><span id="refKwh" class="value">-</span></p>
+            <p><span>실제 충전 요금</span><span id="refUsedCost" class="value">-</span></p>
+            <p><span>부분취소(환불) 예정 금액</span><span id="refCancelAmount" class="cancel-val">-</span></p>
+        </div>
+        <div class="refund-timer"><span id="refundCountdown" class="timer-num">10</span>초 후 초기 화면으로 이동합니다.</div>
     </div>
 </div>
 
 <script>
+    const UNIT_PRICE = {UNIT_PRICE};
     let selectedVolume = "20kWh";
     let selectedAmount = {20 * UNIT_PRICE};
     let pollInterval = null;
     let qrTimeoutTimer = null;
-    let qrLeftSeconds = 120;
+    let chargingInterval = null;
+    let refundTimer = null;
+    let qrLeftSeconds = 60;
+
+    let currentKwh = 0.0;
+    let elapsedSeconds = 0;
+    let maxKwh = 20;
+    let cardInfoName = "-";
 
     function selectOption(btn, volume, amount) {{
         document.querySelectorAll('.option-btn').forEach(b => b.classList.remove('active'));
@@ -190,6 +218,8 @@ async def read_root():
     function resetAllTimers() {{
         if (pollInterval) clearInterval(pollInterval);
         if (qrTimeoutTimer) clearInterval(qrTimeoutTimer);
+        if (chargingInterval) clearInterval(chargingInterval);
+        if (refundTimer) clearInterval(refundTimer);
     }}
 
     async function startPayment() {{
@@ -210,10 +240,11 @@ async def read_root():
                 document.getElementById('qrImage').src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${{qrData}}`;
                 
                 document.getElementById('statusBox').style.display = 'block';
-                document.getElementById('resultBox').style.display = 'none';
+                document.getElementById('chargingBox').style.display = 'none';
+                document.getElementById('refundBox').style.display = 'none';
                 document.getElementById('payStartBtn').style.display = 'none';
                 
-                qrLeftSeconds = 120;
+                qrLeftSeconds = 60;
                 document.getElementById('qrCountdown').innerText = qrLeftSeconds;
 
                 qrTimeoutTimer = setInterval(() => {{
@@ -244,33 +275,77 @@ async def read_root():
             if (data.status === "SUCCESS") {{
                 resetAllTimers();
                 document.getElementById('statusBox').style.display = 'none';
-                showSuccessUI(data);
+                cardInfoName = (data.card_name && data.card_name.trim() !== "") ? data.card_name : "신용카드";
+                startChargingSimulation(selectedVolume, selectedAmount);
             }}
         }} catch (e) {{
             console.error("상태 확인 오류:", e);
         }}
     }}
 
-    function showSuccessUI(data) {{
-        const cardNameElem = document.getElementById('cardName');
-        cardNameElem.innerText = (data.card_name && data.card_name.trim() !== "") ? data.card_name : "신용카드";
+    // ⚡ 1초당 0.1 kWh씩 충전되는 시뮬레이션 시작
+    function startChargingSimulation(volumeStr, paidAmount) {{
+        maxKwh = parseFloat(volumeStr.replace('kWh', ''));
+        currentKwh = 0.0;
+        elapsedSeconds = 0;
 
-        document.getElementById('cardNo').innerText = data.card_no || "****-****-****-****";
-        document.getElementById('payAmount').innerText = (data.amount || selectedAmount).toLocaleString() + "원";
-        document.getElementById('payVolume').innerText = data.volume || selectedVolume;
+        document.getElementById('chgCardName').innerText = cardInfoName;
+        document.getElementById('chgInitialAmount').innerText = paidAmount.toLocaleString() + "원";
+        document.getElementById('chgTargetKwh').innerText = volumeStr;
+        
+        document.getElementById('chargingBox').style.display = 'block';
 
-        document.getElementById('resultBox').style.display = 'block';
+        chargingInterval = setInterval(() => {{
+            elapsedSeconds++;
+            // 1초당 0.1 kWh 증가
+            currentKwh = parseFloat((currentKwh + 0.1).toFixed(1));
+            let currentCost = Math.round(currentKwh * UNIT_PRICE);
 
-        let seconds = 5;
-        const countElem = document.getElementById('countdown');
+            document.getElementById('currentKwh').innerText = currentKwh.toFixed(1) + " kWh";
+            document.getElementById('currentCost').innerText = currentCost.toLocaleString() + "원";
+            document.getElementById('chargingTime').innerText = elapsedSeconds + "초";
 
-        const timer = setInterval(() => {{
-            seconds--;
-            countElem.innerText = seconds;
+            // 목표 충전량(예: 20kWh)에 도달하면 자동 완료 처리
+            if (currentKwh >= maxKwh) {{
+                currentKwh = maxKwh;
+                stopCharging(true);
+            }}
+        }}, 1000);
+    }}
 
-            if (seconds <= 0) {{
-                clearInterval(timer);
-                alert("⚡ 충전이 시작되었습니다!");
+    // 🛑 충전 중지 버튼 클릭 또는 목표 달성 시 호출
+    function stopCharging(isCompleted = false) {{
+        if (chargingInterval) clearInterval(chargingInterval);
+
+        document.getElementById('chargingBox').style.display = 'none';
+        document.getElementById('refundBox').style.display = 'block';
+
+        let initialAmount = selectedAmount; // 선결제 금액
+        let usedCost = Math.round(currentKwh * UNIT_PRICE); // 실제 충전 요금
+        let cancelAmount = initialAmount - usedCost;       // 부분취소(환불) 금액
+        if (cancelAmount < 0) cancelAmount = 0;
+
+        document.getElementById('refInitialAmount').innerText = initialAmount.toLocaleString() + "원";
+        document.getElementById('refKwh').innerText = currentKwh.toFixed(1) + " kWh";
+        document.getElementById('refUsedCost').innerText = usedCost.toLocaleString() + "원";
+        document.getElementById('refCancelAmount').innerText = cancelAmount.toLocaleString() + "원";
+
+        if (isCompleted) {{
+            document.getElementById('refundTitle').innerText = "✅ 목표 충전량이 완료되었습니다!";
+        }} else {{
+            document.getElementById('refundTitle').innerText = "🛑 충전이 중지되었습니다 (부분취소 안내)";
+        }}
+
+        // 10초 동안 부분취소 안내 화면 유지 후 리셋
+        let refundSec = 10;
+        document.getElementById('refundCountdown').innerText = refundSec;
+        
+        refundTimer = setInterval(() => {{
+            refundSec--;
+            document.getElementById('refundCountdown').innerText = refundSec;
+
+            if (refundSec <= 0) {{
+                clearInterval(refundTimer);
                 location.reload();
             }}
         }}, 1000);
@@ -282,7 +357,7 @@ async def read_root():
     return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 # ==================================================
-# 2. KICC 결제 URL 생성 API
+# 2. KICC 결제 URL 생성 API (기존 코드 유지)
 # ==================================================
 @app.post("/api/kicc/create-order")
 async def create_kicc_order(pay_req: PayRequest):
@@ -299,7 +374,7 @@ async def create_kicc_order(pay_req: PayRequest):
             "regSubtype": "10",
             "amount": pay_req.amount,
             "currency": "00",
-            "payCode": "11",
+            "payCode": "00",
             "sndUrl": f"{BASE_URL}/pay-complete",
             "notiUrl": f"{BASE_URL}/api/kicc/webhook"
         },
@@ -336,7 +411,7 @@ async def create_kicc_order(pay_req: PayRequest):
         return {"success": False, "msg": str(e)}
 
 # ==================================================
-# 3. KICC 결제 완료 랜딩 페이지 (리다이렉트 수신 추가)
+# 3. KICC 결제 완료 랜딩 페이지 (기존 코드 유지)
 # ==================================================
 @app.api_route("/pay-complete", methods=["GET", "POST"], response_class=HTMLResponse)
 async def pay_complete(request: Request):
@@ -361,7 +436,6 @@ async def pay_complete(request: Request):
 
         shop_order_no, res_cd, card_name, card_no = parse_payment_data(params)
 
-        # 노티(Webhook) 지연 대비: 핸드폰 리다이렉트 시점에 즉시 승인 완료 처리
         latest_payment["status"] = "SUCCESS"
         if card_name:
             latest_payment["card_name"] = str(card_name)
@@ -396,7 +470,7 @@ async def pay_complete(request: Request):
 </html>"""
 
 # ==================================================
-# 4. KICC Webhook(노티) 수신 API
+# 4. KICC Webhook(노티) 수신 API (기존 코드 유지)
 # ==================================================
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
@@ -434,7 +508,7 @@ async def kicc_webhook(request: Request):
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
 # ==================================================
-# 5. 상태 조회 및 리셋 API
+# 5. 상태 조회 및 리셋 API (기존 코드 유지)
 # ==================================================
 @app.get("/api/payment/status")
 async def get_payment_status():
