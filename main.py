@@ -181,8 +181,8 @@ async def read_root():
     function showSuccessUI(data) {{
         document.getElementById('cardName').innerText = data.card_name || "신용카드";
         document.getElementById('cardNo').innerText = data.card_no || "****-****-****-****";
-        document.getElementById('payAmount').innerText = selectedAmount.toLocaleString() + "원";
-        document.getElementById('payVolume').innerText = selectedVolume;
+        document.getElementById('payAmount').innerText = (data.amount || selectedAmount).toLocaleString() + "원";
+        document.getElementById('payVolume').innerText = data.volume || selectedVolume;
 
         document.getElementById('resultBox').style.display = 'block';
 
@@ -219,16 +219,15 @@ async def create_kicc_order(pay_req: PayRequest):
         "status": "PENDING"
     }
 
-    # KICC URL/SMS 결제 등록 API 규격
     payload = {
         "mall_id": KICC_MID,
         "shop_order_no": order_no,
         "amount": str(pay_req.amount),
         "goods_name": f"전기차 충전 {pay_req.volume}",
-        "pay_method": "11",        # 신용카드
-        "msg_type": "URL",          # [필수] URL 형태 결제창 요청
+        "pay_method": "11",
+        "msg_type": "URL",
         "char_set": "UTF-8",
-        "currency": "00",           # 원화 (KRW)
+        "currency": "00",
         "noti_url": f"{BASE_URL}/api/kicc/webhook",
         "return_url": f"{BASE_URL}/pay-complete",
         "trans_type": "00"
@@ -243,9 +242,6 @@ async def create_kicc_order(pay_req: PayRequest):
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(KICC_URL_PAY_REG_API, json=payload, headers=headers)
             res_data = response.json()
-            
-            print("\n📥 === [KICC URL/SMS 결제 등록 응답] ===")
-            print(json.dumps(res_data, indent=2, ensure_ascii=False))
 
             pay_url = res_data.get("auth_pay_url") or res_data.get("pay_url") or res_data.get("authPayUrl") or res_data.get("res_data", {}).get("auth_pay_url")
 
@@ -257,10 +253,9 @@ async def create_kicc_order(pay_req: PayRequest):
                 return {"result": "FAIL", "msg": f"[{res_cd}] {res_msg}"}
 
     except Exception as e:
-        print(f"❌ KICC API 통신 에러: {e}")
         return {"result": "FAIL", "msg": str(e)}
 
-# 3. KICC 결제 완료 모바일 랜딩 페이지
+# 3. KICC 결제 완료 랜딩
 @app.all("/pay-complete", response_class=HTMLResponse)
 async def pay_complete():
     return """<!DOCTYPE html>
@@ -284,7 +279,7 @@ async def pay_complete():
 </body>
 </html>"""
 
-# 4. KICC 노티(웹훅) 수신
+# 4. KICC Webhook(노티) 수신 - 카드 이름/번호 추출 보완
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
     global latest_payment
@@ -301,8 +296,10 @@ async def kicc_webhook(request: Request):
 
         res_cd = data.get("resCd") or data.get("res_cd")
         shop_order_no = data.get("shopOrderNo") or data.get("shop_order_no")
-        card_name = data.get("card_name") or data.get("cardName") or "신용카드"
-        card_no = data.get("card_no") or data.get("cardNo") or "****-****-****-****"
+        
+        # KICC 파라미터 규격별 카드 정보 동적 매핑
+        card_name = data.get("card_name") or data.get("cardName") or data.get("card_nm") or "신용카드"
+        card_no = data.get("card_no") or data.get("cardNo") or data.get("card_num") or "****-****-****-****"
 
         if res_cd == "0000":
             latest_payment["status"] = "SUCCESS"
@@ -318,7 +315,7 @@ async def kicc_webhook(request: Request):
         print(f"❌ [웹훅 에러]: {e}")
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
-# 5. 결제 상태 조회 및 리셋
+# 5. 상태 조회 및 리셋 API
 @app.get("/api/payment/status")
 async def get_payment_status():
     return latest_payment
