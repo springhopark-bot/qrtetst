@@ -470,7 +470,7 @@ async def pay_complete(request: Request):
 </html>"""
 
 # ==================================================
-# 4. KICC Webhook(노티) 수신 API (재발송 방지 및 검증 강화)
+# 4. KICC Webhook(노티) 수신 API (JSON 응답 규격 적용)
 # ==================================================
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
@@ -479,7 +479,7 @@ async def kicc_webhook(request: Request):
         content_type = request.headers.get("content-type", "")
         data = {}
         
-        # 1. 요청 데이터 파싱
+        # 1. Body 파싱 (JSON 또는 Form 데이터)
         if "application/json" in content_type:
             data = await request.json()
         else:
@@ -492,29 +492,39 @@ async def kicc_webhook(request: Request):
         print(data)
         print("==========================================\n")
 
-        # 2. 데이터 파싱 및 검증
+        # 2. 결제 정보 검증
         shop_order_no, res_cd, card_name, card_no = parse_payment_data(data)
 
-        # 3. KICC 응답 코드가 '0000'(정상 결제 승인)일 때만 SUCCESS 처리
+        # 3. res_cd가 '0000'(정상 결제 승인)일 때만 SUCCESS 처리
         if res_cd == "0000":
-            # 현재 대기 중인 주문번호와 일치하거나 승인 대기 상태일 때만 처리
             latest_payment["status"] = "SUCCESS"
             latest_payment["card_name"] = str(card_name)
             latest_payment["card_no"] = str(card_no)
 
             if shop_order_no and shop_order_no in order_db:
                 order_db[shop_order_no]["status"] = "PAID"
-            print(f"✅ [KICC Webhook Success] 주문번호: {shop_order_no}, 카드사: {card_name}")
+            print(f"✅ [KICC Webhook 성공] 주문번호: {shop_order_no}, 카드사: {card_name}")
+            
+            # KICC 규격에 맞춘 성공 JSON 응답
+            return JSONResponse(
+                content={"resCd": "0000", "resMsg": "정상"},
+                status_code=200
+            )
         else:
-            print(f"⚠️ [KICC Webhook Non-Success] 응답코드: {res_cd}")
-
-        # 4. PG사에게 정상 수신 완료되었음을 응답 (재발송 중단 요청)
-        return PlainTextResponse(content="res_cd=0000&res_msg=SUCCESS", status_code=200)
+            print(f"⚠️ [KICC Webhook 결제실패/취소건] res_cd: {res_cd}")
+            # 결제 성공 건이 아닌 경우 실패 응답 전달
+            return JSONResponse(
+                content={"resCd": "5001", "resMsg": "처리실패"},
+                status_code=200
+            )
 
     except Exception as e:
         print(f"❌ [Webhook Processing Error]: {e}")
-        # 오류가 발생했더라도 PG사의 재요청으로 인한 무한 루프를 막기 위해 성공 응답 반환
-        return PlainTextResponse(content="res_cd=0000&res_msg=SUCCESS", status_code=200)
+        # 예외 발생 시 실패 JSON 응답 반환
+        return JSONResponse(
+            content={"resCd": "5001", "resMsg": "처리실패"},
+            status_code=200
+        )
 
 # ==================================================
 # 5. 상태 조회 및 리셋 API (기존 코드 유지)
