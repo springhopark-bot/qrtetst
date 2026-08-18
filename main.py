@@ -29,7 +29,9 @@ class PayRequest(BaseModel):
     amount: int
     volume: str
 
+# ==================================================
 # 1. 키오스크 메인 UI (캐시 방지 헤더 적용)
+# ==================================================
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     content = f"""<!DOCTYPE html>
@@ -64,7 +66,7 @@ async def read_root():
         .spinner {{ border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: inline-block; vertical-align: middle; margin-right: 8px; }}
         @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
 
-        .qr-timer {{ font-size: 14px; color: #dc3545; font-weight: 700; margin-top: 10px; }}
+        .qr-timer {{ font-size: 14px; color: #dc3545; font-weight: 700; margin-top: 12px; }}
 
         .result-box {{ display: none; background: #f0fff4; border: 2px solid #28a745; border-radius: 12px; padding: 25px 20px; margin-top: 25px; animation: fadeIn 0.3s ease-in-out; }}
         @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
@@ -182,7 +184,7 @@ async def read_root():
                     }}
                 }}, 1000);
 
-                // 결제 승인 폴링
+                // 결제 승인 폴링 (1초 주기)
                 pollInterval = setInterval(checkPaymentStatus, 1000);
             }} else {{
                 alert("KICC 결제 URL 생성 실패: " + (data.msg || "오류 발생"));
@@ -208,8 +210,10 @@ async def read_root():
     }}
 
     function showSuccessUI(data) {{
-        // acquirerName으로 들어온 카드사 이름 표시
-        document.getElementById('cardName').innerText = data.card_name || "신용카드";
+        // acquirerName 또는 노티에서 파싱된 카드 정보 주입
+        const cardNameElem = document.getElementById('cardName');
+        cardNameElem.innerText = (data.card_name && data.card_name.trim() !== "") ? data.card_name : "신용카드";
+
         document.getElementById('cardNo').innerText = data.card_no || "****-****-****-****";
         document.getElementById('payAmount').innerText = (data.amount || selectedAmount).toLocaleString() + "원";
         document.getElementById('payVolume').innerText = data.volume || selectedVolume;
@@ -236,7 +240,9 @@ async def read_root():
 </html>"""
     return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
+# ==================================================
 # 2. KICC 결제 URL 생성 API
+# ==================================================
 @app.post("/api/kicc/create-order")
 async def create_kicc_order(pay_req: PayRequest):
     global latest_payment
@@ -267,7 +273,7 @@ async def create_kicc_order(pay_req: PayRequest):
         response = requests.post(KICC_API_URL, json=payload, timeout=10)
         res_data = response.json()
 
-        print("[KICC Response]:", res_data)
+        print("[KICC DirectReg Response]:", res_data)
 
         if res_data.get("resCd") == "0000":
             order_db[order_no] = {
@@ -288,7 +294,9 @@ async def create_kicc_order(pay_req: PayRequest):
     except Exception as e:
         return {"success": False, "msg": str(e)}
 
-# 3. KICC 결제 완료 랜딩 페이지
+# ==================================================
+# 3. KICC 결제 완료 랜딩 페이지 (모바일 화면용)
+# ==================================================
 @app.api_route("/pay-complete", methods=["GET", "POST"], response_class=HTMLResponse)
 async def pay_complete():
     return """<!DOCTYPE html>
@@ -312,7 +320,9 @@ async def pay_complete():
 </body>
 </html>"""
 
-# 4. KICC Webhook(노티) 수신 API (acquirerName을 card_name으로 매핑)
+# ==================================================
+# 4. KICC Webhook(노티) 수신 API (acquirerName 최우선 파싱)
+# ==================================================
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
     global latest_payment
@@ -324,28 +334,41 @@ async def kicc_webhook(request: Request):
             form_data = await request.form()
             data = dict(form_data)
 
-        print("[KICC Webhook Raw Data]:", data)
+        print("\n====== [KICC Webhook Received Data] ======")
+        print(data)
+        print("==========================================\n")
 
-        res_cd = data.get("resCd") or data.get("res_cd")
-        shop_order_no = data.get("shopOrderNo") or data.get("shop_order_no")
+        # 대소문자 구분을 없애기 위한 소문자 정규화 딕셔너리
+        lower_data = {str(k).lower(): v for k, v in data.items() if v}
+
+        res_cd = lower_data.get("rescd") or lower_data.get("res_cd")
+        shop_order_no = lower_data.get("shoporderno") or lower_data.get("shop_order_no")
         
-        # 노티 응답값의 acquirerName 추출 (대소문자/표기 방식 대비)
+        # acquirerName 최우선 추출 -> 없으면 대체 매입사명 필드 추출
         card_name = (
-            data.get("acquirerName")
-            or data.get("acquirer_name")
-            or data.get("card_mgb_nm") 
-            or data.get("cardMgbNm") 
-            or data.get("card_name") 
-            or data.get("cardName") 
-            or data.get("card_nm") 
+            lower_data.get("acquirername")       # acquirerName
+            or lower_data.get("acquirer_name")
+            or lower_data.get("cardmgbnm")       # cardMgbNm (매입사명)
+            or lower_data.get("card_mgb_nm")
+            or lower_data.get("cardpubnm")       # cardPubNm (발급사명)
+            or lower_data.get("card_pub_nm")
+            or lower_data.get("cardname")
+            or lower_data.get("card_name")
+            or lower_data.get("cardnm")
             or "신용카드"
         )
-        card_no = data.get("card_no") or data.get("cardNo") or data.get("card_num") or "****-****-****-****"
+        
+        card_no = (
+            lower_data.get("cardno") 
+            or lower_data.get("card_no") 
+            or lower_data.get("cardnum") 
+            or "****-****-****-****"
+        )
 
         if res_cd == "0000":
             latest_payment["status"] = "SUCCESS"
-            latest_payment["card_name"] = card_name
-            latest_payment["card_no"] = card_no
+            latest_payment["card_name"] = str(card_name)
+            latest_payment["card_no"] = str(card_no)
 
             if shop_order_no and shop_order_no in order_db:
                 order_db[shop_order_no]["status"] = "PAID"
@@ -353,9 +376,12 @@ async def kicc_webhook(request: Request):
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
     except Exception as e:
+        print(f"[Webhook Error]: {e}")
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
+# ==================================================
 # 5. 상태 조회 및 리셋 API
+# ==================================================
 @app.get("/api/payment/status")
 async def get_payment_status():
     return latest_payment
