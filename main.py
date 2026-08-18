@@ -117,7 +117,7 @@ async def read_root():
     <div id="resultBox" class="result-box">
         <h3>✅ 결제가 완료되었습니다!</h3>
         <div class="card-info">
-            <p><span>매입 카드사</span><span id="cardName" class="value">-</span></p>
+            <p><span>결제 카드</span><span id="cardName" class="value">-</span></p>
             <p><span>카드 번호</span><span id="cardNo" class="value">-</span></p>
             <p><span>목표 충전량</span><span id="payVolume" class="value">-</span></p>
             <p><span>선결제 금액</span><span id="payAmount" class="value">-</span></p>
@@ -208,6 +208,7 @@ async def read_root():
     }}
 
     function showSuccessUI(data) {{
+        // acquirerName으로 들어온 카드사 이름 표시
         document.getElementById('cardName').innerText = data.card_name || "신용카드";
         document.getElementById('cardNo').innerText = data.card_no || "****-****-****-****";
         document.getElementById('payAmount').innerText = (data.amount || selectedAmount).toLocaleString() + "원";
@@ -311,7 +312,7 @@ async def pay_complete():
 </body>
 </html>"""
 
-# 4. KICC Webhook(노티) 수신 API (acquirerName 최우선 표기 적용)
+# 4. KICC Webhook(노티) 수신 API (acquirerName을 card_name으로 매핑)
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
     global latest_payment
@@ -328,14 +329,12 @@ async def kicc_webhook(request: Request):
         res_cd = data.get("resCd") or data.get("res_cd")
         shop_order_no = data.get("shopOrderNo") or data.get("shop_order_no")
         
-        # acquirerName 최우선 적용 (낙타표기법 / 뱀표기법 및 대체 키 모두 검삭)
+        # 노티 응답값의 acquirerName 추출 (대소문자/표기 방식 대비)
         card_name = (
             data.get("acquirerName")
             or data.get("acquirer_name")
             or data.get("card_mgb_nm") 
             or data.get("cardMgbNm") 
-            or data.get("card_pub_nm") 
-            or data.get("cardPubNm") 
             or data.get("card_name") 
             or data.get("cardName") 
             or data.get("card_nm") 
