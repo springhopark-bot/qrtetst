@@ -202,7 +202,7 @@ async def read_root():
 </body>
 </html>"""
 
-# 2. 공식 문서(register-tx) 규격 적용 KICC 결제 등록 요청
+# 2. 공식 문서(register-tx) 보완 규격 적용 KICC 결제 등록 요청
 @app.post("/api/kicc/create-order")
 async def create_kicc_order(pay_req: PayRequest):
     global latest_payment
@@ -216,16 +216,19 @@ async def create_kicc_order(pay_req: PayRequest):
         "status": "PENDING"
     }
 
-    # 공식 가이드 규격 JSON Body
+    # KICC URL/SMS 결제 등록 API 필수 규격
     payload = {
         "mall_id": KICC_MID,
         "shop_order_no": order_no,
         "amount": str(pay_req.amount),
         "goods_name": f"전기차 충전 {pay_req.volume}",
-        "pay_method": "11",  # 신용카드
+        "pay_method": "11",        # 신용카드
+        "msg_type": "URL",          # [필수] URL 형태 결제창 요청
+        "char_set": "UTF-8",        # 문자셋
+        "currency": "00",           # 원화 (KRW)
         "noti_url": f"{BASE_URL}/api/kicc/webhook",
-        "return_url": f"{BASE_URL}/api/kicc/webhook",
-        "trans_type": "00"
+        "return_url": f"{BASE_URL}/pay-complete",
+        "trans_type": "00"         # 일반승인
     }
 
     headers = {
@@ -241,8 +244,8 @@ async def create_kicc_order(pay_req: PayRequest):
             print("\n📥 === [KICC URL/SMS 결제 등록 응답] ===")
             print(json.dumps(res_data, indent=2, ensure_ascii=False))
 
-            # 문서 상 응답 필드에서 모바일 결제창 URL 추출 (auth_pay_url / pay_url)
-            pay_url = res_data.get("auth_pay_url") or res_data.get("pay_url") or res_data.get("authPayUrl")
+            # 응답 필드에서 모바일 결제 URL 추출
+            pay_url = res_data.get("auth_pay_url") or res_data.get("pay_url") or res_data.get("authPayUrl") or res_data.get("res_data", {}).get("auth_pay_url")
 
             if pay_url:
                 return {"result": "SUCCESS", "pay_url": pay_url}
@@ -255,7 +258,31 @@ async def create_kicc_order(pay_req: PayRequest):
         print(f"❌ KICC API 통신 에러: {e}")
         return {"result": "FAIL", "msg": str(e)}
 
-# 3. KICC 노티(웹훅) 수신 엔드포인트
+# 3. KICC 결제 완료 모바일 리다이렉트 랜딩
+@app.all("/pay-complete", response_class=HTMLResponse)
+async def pay_complete():
+    return """<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>결제 완료</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 50px 20px; background: #f8f9fa; }
+        .box { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 360px; margin: 0 auto; }
+        h2 { color: #28a745; margin-bottom: 10px; }
+        p { color: #666; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>✅ 결제 요청 완료</h2>
+        <p>결제가 정상 처리되었습니다.<br>키오스크 화면을 확인해 주세요.</p>
+    </div>
+</body>
+</html>"""
+
+# 4. KICC 노티(웹훅) 수신 엔드포인트
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
     global latest_payment
@@ -284,14 +311,13 @@ async def kicc_webhook(request: Request):
                 order_db[shop_order_no]["status"] = "PAID"
                 print(f"✅ [주문 완료 처리] {shop_order_no}")
 
-        # KICC 필수 응답 포맷
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
     except Exception as e:
         print(f"❌ [웹훅 처리 중 에러]: {e}")
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
-# 4. 상태 조회/리셋
+# 5. 상태 조회 및 리셋
 @app.get("/api/payment/status")
 async def get_payment_status():
     return latest_payment
