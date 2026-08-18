@@ -9,7 +9,7 @@ app = FastAPI(title="Kiosk Payment Service")
 # --------------------------------------------------
 # 🔑 KICC 가이드 문서 규격 설정 및 충전 단가 설정
 # --------------------------------------------------
-MALL_ID = "T2506894"  # 가맹점 MID
+MALL_ID = "T0022488"  # 가맹점 MID
 KICC_API_URL = "https://testpgapi.easypay.co.kr/directapi/trades/directSmsUrlPayReg"
 BASE_URL = "https://qrtetst.onrender.com"
 
