@@ -1,5 +1,6 @@
 import uuid
 import requests
+from urllib.parse import parse_qs
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
@@ -29,8 +30,51 @@ class PayRequest(BaseModel):
     amount: int
     volume: str
 
+# --------------------------------------------------
+# 🛠️ 카드 정보 및 발급사명(issuerName) 파싱 함수
+# --------------------------------------------------
+def parse_payment_data(data: dict):
+    lower_data = {str(k).lower(): str(v).strip() for k, v in data.items() if v}
+    
+    # issuerName 최우선 추출 (발급사명) -> 없을 경우 대체 발급사/매입사 필드 확인
+    card_name = (
+        lower_data.get("issuername")         # issuerName (최우선)
+        or lower_data.get("issuer_name")
+        or lower_data.get("cardpubnm")       # cardPubNm (발급사명)
+        or lower_data.get("card_pub_nm")
+        or lower_data.get("cardmgbnm")       # cardMgbNm (매입사명)
+        or lower_data.get("card_mgb_nm")
+        or lower_data.get("acquirername")    # acquirerName
+        or lower_data.get("acquirer_name")
+        or lower_data.get("cardname")
+        or lower_data.get("card_name")
+        or lower_data.get("cardnm")
+    )
+
+    # 카드사 텍스트명이 없을 경우 기관코드(fn_cd 등)를 이용한 매핑
+    if not card_name:
+        fn_cd = lower_data.get("fn_cd") or lower_data.get("card_code") or lower_data.get("fn_code")
+        card_code_map = {
+            "01": "비씨카드", "02": "국민카드", "03": "하나카드",
+            "04": "삼성카드", "06": "신한카드", "07": "현대카드",
+            "08": "롯데카드", "11": "농협카드", "12": "수협카드"
+        }
+        card_name = card_code_map.get(fn_cd, "신용카드")
+
+    card_no = (
+        lower_data.get("cardno") 
+        or lower_data.get("card_no") 
+        or lower_data.get("cardnum") 
+        or "****-****-****-****"
+    )
+
+    res_cd = lower_data.get("rescd") or lower_data.get("res_cd")
+    shop_order_no = lower_data.get("shoporderno") or lower_data.get("shop_order_no")
+
+    return shop_order_no, res_cd, card_name, card_no
+
 # ==================================================
-# 1. 키오스크 메인 UI (캐시 방지 헤더 적용)
+# 1. 키오스크 메인 UI
 # ==================================================
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -119,7 +163,7 @@ async def read_root():
     <div id="resultBox" class="result-box">
         <h3>✅ 결제가 완료되었습니다!</h3>
         <div class="card-info">
-            <p><span>결제 카드</span><span id="cardName" class="value">-</span></p>
+            <p><span>결제 카드 (발급사)</span><span id="cardName" class="value">-</span></p>
             <p><span>카드 번호</span><span id="cardNo" class="value">-</span></p>
             <p><span>목표 충전량</span><span id="payVolume" class="value">-</span></p>
             <p><span>선결제 금액</span><span id="payAmount" class="value">-</span></p>
@@ -169,7 +213,6 @@ async def read_root():
                 document.getElementById('resultBox').style.display = 'none';
                 document.getElementById('payStartBtn').style.display = 'none';
                 
-                // 1분(60초) 타임아웃 카운트다운 시작
                 qrLeftSeconds = 60;
                 document.getElementById('qrCountdown').innerText = qrLeftSeconds;
 
@@ -184,7 +227,6 @@ async def read_root():
                     }}
                 }}, 1000);
 
-                // 결제 승인 폴링 (1초 주기)
                 pollInterval = setInterval(checkPaymentStatus, 1000);
             }} else {{
                 alert("KICC 결제 URL 생성 실패: " + (data.msg || "오류 발생"));
@@ -210,7 +252,6 @@ async def read_root():
     }}
 
     function showSuccessUI(data) {{
-        // acquirerName 또는 노티에서 파싱된 카드 정보 주입
         const cardNameElem = document.getElementById('cardName');
         cardNameElem.innerText = (data.card_name && data.card_name.trim() !== "") ? data.card_name : "신용카드";
 
@@ -258,7 +299,7 @@ async def create_kicc_order(pay_req: PayRequest):
             "regSubtype": "10",
             "amount": pay_req.amount,
             "currency": "00",
-            "payCode": "00",
+            "payCode": "11",
             "sndUrl": f"{BASE_URL}/pay-complete",
             "notiUrl": f"{BASE_URL}/api/kicc/webhook"
         },
@@ -295,10 +336,44 @@ async def create_kicc_order(pay_req: PayRequest):
         return {"success": False, "msg": str(e)}
 
 # ==================================================
-# 3. KICC 결제 완료 랜딩 페이지 (모바일 화면용)
+# 3. KICC 결제 완료 랜딩 페이지 (리다이렉트 수신 추가)
 # ==================================================
 @app.api_route("/pay-complete", methods=["GET", "POST"], response_class=HTMLResponse)
-async def pay_complete():
+async def pay_complete(request: Request):
+    global latest_payment
+    try:
+        params = dict(request.query_params)
+
+        if request.method == "POST":
+            try:
+                raw_body = await request.body()
+                body_str = raw_body.decode("utf-8", errors="ignore")
+                parsed = parse_qs(body_str)
+                for k, v in parsed.items():
+                    if v:
+                        params[k] = v[0]
+            except Exception as pe:
+                print(f"[sndUrl Body Parse Error]: {pe}")
+
+        print("\n====== [sndUrl /pay-complete Received Data] ======")
+        print(params)
+        print("==================================================\n")
+
+        shop_order_no, res_cd, card_name, card_no = parse_payment_data(params)
+
+        # 노티(Webhook) 지연 대비: 핸드폰 리다이렉트 시점에 즉시 승인 완료 처리
+        latest_payment["status"] = "SUCCESS"
+        if card_name:
+            latest_payment["card_name"] = str(card_name)
+        if card_no:
+            latest_payment["card_no"] = str(card_no)
+
+        if shop_order_no and shop_order_no in order_db:
+            order_db[shop_order_no]["status"] = "PAID"
+
+    except Exception as e:
+        print(f"[pay-complete handling error]: {e}")
+
     return """<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -321,49 +396,28 @@ async def pay_complete():
 </html>"""
 
 # ==================================================
-# 4. KICC Webhook(노티) 수신 API (acquirerName 최우선 파싱)
+# 4. KICC Webhook(노티) 수신 API
 # ==================================================
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
     global latest_payment
     try:
         content_type = request.headers.get("content-type", "")
+        data = {}
+        
         if "application/json" in content_type:
             data = await request.json()
         else:
-            form_data = await request.form()
-            data = dict(form_data)
+            raw_body = await request.body()
+            body_str = raw_body.decode("utf-8", errors="ignore")
+            parsed = parse_qs(body_str)
+            data = {k: v[0] for k, v in parsed.items() if v}
 
         print("\n====== [KICC Webhook Received Data] ======")
         print(data)
         print("==========================================\n")
 
-        # 대소문자 구분을 없애기 위한 소문자 정규화 딕셔너리
-        lower_data = {str(k).lower(): v for k, v in data.items() if v}
-
-        res_cd = lower_data.get("rescd") or lower_data.get("res_cd")
-        shop_order_no = lower_data.get("shoporderno") or lower_data.get("shop_order_no")
-        
-        # acquirerName 최우선 추출 -> 없으면 대체 매입사명 필드 추출
-        card_name = (
-            lower_data.get("acquirername")       # acquirerName
-            or lower_data.get("acquirer_name")
-            or lower_data.get("cardmgbnm")       # cardMgbNm (매입사명)
-            or lower_data.get("card_mgb_nm")
-            or lower_data.get("cardpubnm")       # cardPubNm (발급사명)
-            or lower_data.get("card_pub_nm")
-            or lower_data.get("cardname")
-            or lower_data.get("card_name")
-            or lower_data.get("cardnm")
-            or "신용카드"
-        )
-        
-        card_no = (
-            lower_data.get("cardno") 
-            or lower_data.get("card_no") 
-            or lower_data.get("cardnum") 
-            or "****-****-****-****"
-        )
+        shop_order_no, res_cd, card_name, card_no = parse_payment_data(data)
 
         if res_cd == "0000":
             latest_payment["status"] = "SUCCESS"
