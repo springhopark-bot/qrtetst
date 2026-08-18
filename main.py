@@ -163,7 +163,7 @@ async def read_root():
         <p style="margin: 8px 0 0 0; font-size: 14px; color: #495057; font-weight: 600;">
             <span class="spinner"></span>KICC 결제 승인 확인 중...
         </p>
-        <div class="qr-timer">⏱️ <span id="qrCountdown">60</span>초 내에 결제를 완료해 주세요</div>
+        <div class="qr-timer">⏱️ <span id="qrCountdown">120</span>초 내에 결제를 완료해 주세요</div>
     </div>
 
     <!-- 🔌 실시간 충전 중 화면 -->
@@ -244,7 +244,7 @@ async def read_root():
                 document.getElementById('refundBox').style.display = 'none';
                 document.getElementById('payStartBtn').style.display = 'none';
                 
-                qrLeftSeconds = 60;
+                qrLeftSeconds = 120;
                 document.getElementById('qrCountdown').innerText = qrLeftSeconds;
 
                 qrTimeoutTimer = setInterval(() => {{
