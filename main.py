@@ -231,12 +231,13 @@ async def create_kicc_order(pay_req: PayRequest):
         "status": "PENDING"
     }
 
+    # KICC 규격에 맞춘 payload 구성
     payload = {
         "mall_id": KICC_MID,
         "shop_order_no": order_no,
         "amount": str(pay_req.amount),
-        "goods_name": f"전기차 충전 {pay_req.volume}",
-        "pay_method": "11",
+        "goods_name": f"EV Charge {pay_req.volume}",  # 한글 특수문자 이슈 방지를 위해 영문/숫자 위주 테스트
+        "pay_method": "11",                           # 신용카드 결제 수단 코드
         "msg_type": "URL",
         "char_set": "UTF-8",
         "currency": "00",
@@ -255,7 +256,15 @@ async def create_kicc_order(pay_req: PayRequest):
             response = await client.post(KICC_URL_PAY_REG_API, json=payload, headers=headers)
             res_data = response.json()
 
-            pay_url = res_data.get("auth_pay_url") or res_data.get("pay_url") or res_data.get("authPayUrl") or res_data.get("res_data", {}).get("auth_pay_url")
+            # 응답 데이터 로깅 (Render 로그 확인용)
+            print("KICC Response:", res_data)
+
+            pay_url = (
+                res_data.get("auth_pay_url") 
+                or res_data.get("pay_url") 
+                or res_data.get("authPayUrl") 
+                or res_data.get("res_data", {}).get("auth_pay_url")
+            )
 
             if pay_url:
                 return {"result": "SUCCESS", "pay_url": pay_url}
