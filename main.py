@@ -30,13 +30,16 @@ class PayRequest(BaseModel):
     amount: int
     volume: str
 
-# 1. 키오스크 메인 UI
+# 1. 키오스크 메인 UI (캐시 방지 헤더 추가)
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    return f"""<!DOCTYPE html>
+    content = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>전기차 충전 결제 키오스크</title>
     <style>
@@ -204,6 +207,7 @@ async def read_root():
 
 </body>
 </html>"""
+    return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 # 2. KICC 결제 등록 API
 @app.post("/api/kicc/create-order")
@@ -279,7 +283,7 @@ async def pay_complete():
 </body>
 </html>"""
 
-# 4. KICC Webhook(노티) 수신 - 카드 이름/번호 추출 보완
+# 4. KICC Webhook(노티) 수신
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
     global latest_payment
@@ -291,13 +295,9 @@ async def kicc_webhook(request: Request):
             form_data = await request.form()
             data = dict(form_data)
 
-        print("\n📥 === [KICC 웹훅 수신] ===")
-        print(json.dumps(data, indent=2, ensure_ascii=False))
-
         res_cd = data.get("resCd") or data.get("res_cd")
         shop_order_no = data.get("shopOrderNo") or data.get("shop_order_no")
         
-        # KICC 파라미터 규격별 카드 정보 동적 매핑
         card_name = data.get("card_name") or data.get("cardName") or data.get("card_nm") or "신용카드"
         card_no = data.get("card_no") or data.get("cardNo") or data.get("card_num") or "****-****-****-****"
 
@@ -312,7 +312,6 @@ async def kicc_webhook(request: Request):
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
     except Exception as e:
-        print(f"❌ [웹훅 에러]: {e}")
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
 # 5. 상태 조회 및 리셋 API
