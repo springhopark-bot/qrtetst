@@ -152,7 +152,7 @@ async def read_root():
     <button id="payStartBtn" class="pay-btn" onclick="startPayment()">결제 및 충전 시작</button>
 
     <div id="statusBox" class="status-box">
-        <h4 style="margin:0; color:#333;">스마트폰 카메라 또는 앱카드로 QR을 스캔하세요</h4>
+        <h4 style="margin:0; color:#333;">스마트폰 카메라로 QR을 스캔하세요</h4>
         <img id="qrImage" class="qr-img" src="" alt="KICC 결제 QR코드">
         <p style="margin: 8px 0 0 0; font-size: 14px; color: #495057; font-weight: 600;">
             <span class="spinner"></span>KICC 결제 승인 확인 중...
