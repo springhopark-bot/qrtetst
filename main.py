@@ -7,9 +7,9 @@ from pydantic import BaseModel
 app = FastAPI(title="Kiosk Payment Service")
 
 # --------------------------------------------------
-# 🔑 KICC MID 원복 및 기본 설정
+# 🔑 KICC 설정 및 충전 단가
 # --------------------------------------------------
-MALL_ID = "T0022488"  # ★ 원래 사용하시던 MID로 원복
+MALL_ID = "T0022488"
 KICC_API_URL = "https://testpgapi.easypay.co.kr/directapi/trades/directSmsUrlPayReg"
 BASE_URL = "https://qrtetst.onrender.com"
 
@@ -64,6 +64,8 @@ async def read_root():
         .spinner {{ border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: inline-block; vertical-align: middle; margin-right: 8px; }}
         @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
 
+        .qr-timer {{ font-size: 14px; color: #dc3545; font-weight: 700; margin-top: 10px; }}
+
         .result-box {{ display: none; background: #f0fff4; border: 2px solid #28a745; border-radius: 12px; padding: 25px 20px; margin-top: 25px; animation: fadeIn 0.3s ease-in-out; }}
         @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
         .result-box h3 {{ color: #28a745; margin: 0 0 15px 0; font-size: 20px; }}
@@ -109,12 +111,13 @@ async def read_root():
         <p style="margin: 8px 0 0 0; font-size: 14px; color: #495057; font-weight: 600;">
             <span class="spinner"></span>KICC 결제 승인 확인 중...
         </p>
+        <div class="qr-timer">⏱️ <span id="qrCountdown">60</span>초 내에 결제를 완료해 주세요</div>
     </div>
 
     <div id="resultBox" class="result-box">
         <h3>✅ 결제가 완료되었습니다!</h3>
         <div class="card-info">
-            <p><span>결제 카드</span><span id="cardName" class="value">-</span></p>
+            <p><span>매입 카드사</span><span id="cardName" class="value">-</span></p>
             <p><span>카드 번호</span><span id="cardNo" class="value">-</span></p>
             <p><span>목표 충전량</span><span id="payVolume" class="value">-</span></p>
             <p><span>선결제 금액</span><span id="payAmount" class="value">-</span></p>
@@ -128,6 +131,8 @@ async def read_root():
     let selectedVolume = "20kWh";
     let selectedAmount = {20 * UNIT_PRICE};
     let pollInterval = null;
+    let qrTimeoutTimer = null;
+    let qrLeftSeconds = 60;
 
     function selectOption(btn, volume, amount) {{
         document.querySelectorAll('.option-btn').forEach(b => b.classList.remove('active'));
@@ -136,8 +141,14 @@ async def read_root():
         selectedAmount = amount;
     }}
 
+    function resetAllTimers() {{
+        if (pollInterval) clearInterval(pollInterval);
+        if (qrTimeoutTimer) clearInterval(qrTimeoutTimer);
+    }}
+
     async function startPayment() {{
         await fetch('/api/payment/reset', {{ method: 'POST' }});
+        resetAllTimers();
         
         try {{
             const response = await fetch('/api/kicc/create-order', {{
@@ -156,7 +167,22 @@ async def read_root():
                 document.getElementById('resultBox').style.display = 'none';
                 document.getElementById('payStartBtn').style.display = 'none';
                 
-                if(pollInterval) clearInterval(pollInterval);
+                // 1분(60초) 타임아웃 카운트다운 시작
+                qrLeftSeconds = 60;
+                document.getElementById('qrCountdown').innerText = qrLeftSeconds;
+
+                qrTimeoutTimer = setInterval(() => {{
+                    qrLeftSeconds--;
+                    document.getElementById('qrCountdown').innerText = qrLeftSeconds;
+
+                    if (qrLeftSeconds <= 0) {{
+                        resetAllTimers();
+                        alert("⏱️ 결제 시간이 초과되었습니다. 초기 화면으로 이동합니다.");
+                        location.reload();
+                    }}
+                }}, 1000);
+
+                // 결제 승인 폴링
                 pollInterval = setInterval(checkPaymentStatus, 1000);
             }} else {{
                 alert("KICC 결제 URL 생성 실패: " + (data.msg || "오류 발생"));
@@ -172,7 +198,7 @@ async def read_root():
             const data = await res.json();
 
             if (data.status === "SUCCESS") {{
-                clearInterval(pollInterval);
+                resetAllTimers();
                 document.getElementById('statusBox').style.display = 'none';
                 showSuccessUI(data);
             }}
@@ -220,18 +246,18 @@ async def create_kicc_order(pay_req: PayRequest):
     
     payload = {
         "directRegInfo": {
-            "mallId": MALL_ID,                       # T0022488 적용
-            "regTxtype": "52",                      # 결제 URL 생성요청
-            "regSubtype": "10",                     # 신규등록
+            "mallId": MALL_ID,
+            "regTxtype": "52",
+            "regSubtype": "10",
             "amount": pay_req.amount,
             "currency": "00",
             "payCode": "00",
-            "sndUrl": f"{BASE_URL}/pay-complete",     # 결제 완료 이동 주소
-            "notiUrl": f"{BASE_URL}/api/kicc/webhook" # 결제 상태 알림 주소
+            "sndUrl": f"{BASE_URL}/pay-complete",
+            "notiUrl": f"{BASE_URL}/api/kicc/webhook"
         },
         "directOrderInfo": {
             "shopOrderNo": order_no,
-            "goodsName": f"EV_{pay_req.volume}",        # 영문/숫자 형태의 안전한 상품명
+            "goodsName": f"EV_{pay_req.volume}",
             "goodsAmount": pay_req.amount
         }
     }
@@ -285,7 +311,7 @@ async def pay_complete():
 </body>
 </html>"""
 
-# 4. KICC Webhook(노티) 수신 API
+# 4. KICC Webhook(노티) 수신 API (acquirerName 최우선 표기 적용)
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
     global latest_payment
@@ -297,10 +323,24 @@ async def kicc_webhook(request: Request):
             form_data = await request.form()
             data = dict(form_data)
 
+        print("[KICC Webhook Raw Data]:", data)
+
         res_cd = data.get("resCd") or data.get("res_cd")
         shop_order_no = data.get("shopOrderNo") or data.get("shop_order_no")
         
-        card_name = data.get("card_name") or data.get("cardName") or data.get("card_nm") or "신용카드"
+        # acquirerName 최우선 적용 (낙타표기법 / 뱀표기법 및 대체 키 모두 검삭)
+        card_name = (
+            data.get("acquirerName")
+            or data.get("acquirer_name")
+            or data.get("card_mgb_nm") 
+            or data.get("cardMgbNm") 
+            or data.get("card_pub_nm") 
+            or data.get("cardPubNm") 
+            or data.get("card_name") 
+            or data.get("cardName") 
+            or data.get("card_nm") 
+            or "신용카드"
+        )
         card_no = data.get("card_no") or data.get("cardNo") or data.get("card_num") or "****-****-****-****"
 
         if res_cd == "0000":
