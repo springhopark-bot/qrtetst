@@ -158,7 +158,7 @@ async def read_root():
 
     <!-- QR 스캔 대기 화면 -->
     <div id="statusBox" class="status-box">
-        <h4 style="margin:0; color:#333;">스마트폰 카메라 또는 앱카드로 QR을 스캔하세요</h4>
+        <h4 style="margin:0; color:#333;">스마트폰 카메라로 QR을 스캔하세요</h4>
         <img id="qrImage" class="qr-img" src="" alt="KICC 결제 QR코드">
         <p style="margin: 8px 0 0 0; font-size: 14px; color: #495057; font-weight: 600;">
             <span class="spinner"></span>KICC 결제 승인 확인 중...
@@ -374,7 +374,7 @@ async def create_kicc_order(pay_req: PayRequest):
             "regSubtype": "10",
             "amount": pay_req.amount,
             "currency": "00",
-            "payCode": "00",
+            "payCode": "11",
             "sndUrl": f"{BASE_URL}/pay-complete",
             "notiUrl": f"{BASE_URL}/api/kicc/webhook"
         },
