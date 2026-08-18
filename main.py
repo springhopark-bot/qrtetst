@@ -1,5 +1,5 @@
 import uuid
-import json  # JSON 처리용 모듈
+import json
 import requests
 from typing import Optional
 from urllib.parse import parse_qs
@@ -31,6 +31,7 @@ latest_payment = {
 class PayRequest(BaseModel):
     amount: int
     volume: str
+    phone_number: Optional[str] = None  # 👈 SMS 발송용 휴대폰 번호 필드 추가
 
 class ResetRequest(BaseModel):
     shop_order_no: Optional[str] = None
@@ -77,7 +78,7 @@ def parse_payment_data(data: dict):
     return shop_order_no, res_cd, card_name, card_no
 
 # ==================================================
-# 1. 키오스크 메인 UI
+# 1. 키오스크 메인 UI (SMS 전송 기능 추가)
 # ==================================================
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -109,11 +110,20 @@ async def read_root():
         .pay-btn:hover {{ background: #218838; }}
        
         .status-box {{ display: none; margin-top: 25px; padding: 20px; border-radius: 12px; background: #f8f9fa; border: 1px solid #e9ecef; }}
-        .qr-img {{ width: 220px; height: 220px; margin: 15px auto; border: 4px solid #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: block; }}
+        .qr-img {{ width: 200px; height: 200px; margin: 15px auto; border: 4px solid #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: block; }}
         .spinner {{ border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: inline-block; vertical-align: middle; margin-right: 8px; }}
         @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
 
-        .qr-timer {{ font-size: 14px; color: #dc3545; font-weight: 700; margin-top: 12px; }}
+        .qr-timer {{ font-size: 14px; color: #dc3545; font-weight: 700; margin-top: 10px; }}
+
+        /* 📱 SMS 입력창 스타일 */
+        .sms-container {{ margin-top: 20px; padding-top: 15px; border-top: 1px dashed #ccc; }}
+        .sms-title {{ font-size: 14px; font-weight: 600; color: #495057; margin-bottom: 8px; }}
+        .sms-form {{ display: flex; gap: 8px; justify-content: center; }}
+        .sms-input {{ width: 65%; padding: 12px; font-size: 15px; border: 1px solid #ced4da; border-radius: 8px; outline: none; text-align: center; }}
+        .sms-input:focus {{ border-color: #007bff; }}
+        .sms-btn {{ padding: 12px 16px; background: #007bff; color: white; font-weight: 700; border: none; border-radius: 8px; cursor: pointer; white-space: nowrap; }}
+        .sms-btn:hover {{ background: #0056b3; }}
 
         .charging-box {{ display: none; background: #f0f8ff; border: 2px solid #007bff; border-radius: 12px; padding: 25px 20px; margin-top: 25px; }}
         .charging-stats {{ background: white; padding: 15px; border-radius: 8px; border: 1px solid #b8daff; text-align: left; margin: 15px 0; line-height: 1.8; }}
@@ -159,7 +169,7 @@ async def read_root():
 
     <button id="payStartBtn" class="pay-btn" onclick="startPayment()">결제 및 충전 시작</button>
 
-    <!-- QR 스캔 대기 화면 -->
+    <!-- QR 스캔 및 SMS 수신 대기 화면 -->
     <div id="statusBox" class="status-box">
         <h4 style="margin:0; color:#333;">스마트폰 카메라로 QR을 스캔하세요</h4>
         <img id="qrImage" class="qr-img" src="" alt="KICC 결제 QR코드">
@@ -167,6 +177,15 @@ async def read_root():
             <span class="spinner"></span>KICC 결제 승인 확인 중...
         </p>
         <div class="qr-timer">⏱️ <span id="qrCountdown">120</span>초 내에 결제를 완료해 주세요</div>
+
+        <!-- 📱 SMS 발송 영역 -->
+        <div class="sms-container">
+            <div class="sms-title">📱 문자(SMS)로 결제 링크 받기</div>
+            <div class="sms-form">
+                <input type="tel" id="phoneInput" class="sms-input" placeholder="01012345678" maxlength="11">
+                <button class="sms-btn" onclick="sendSmsLink()">문자 전송</button>
+            </div>
+        </div>
     </div>
 
     <!-- 🔌 실시간 충전 중 화면 -->
@@ -225,7 +244,7 @@ async def read_root():
         if (refundTimer) clearInterval(refundTimer);
     }}
 
-    async function startPayment() {{
+    async function startPayment(phoneNumber = null) {{
         await fetch('/api/payment/reset', {{ method: 'POST' }});
         resetAllTimers();
        
@@ -233,7 +252,11 @@ async def read_root():
             const response = await fetch('/api/kicc/create-order', {{
                 method: 'POST',
                 headers: {{ 'Content-Type': 'application/json' }},
-                body: JSON.stringify({{ amount: selectedAmount, volume: selectedVolume }})
+                body: JSON.stringify({{ 
+                    amount: selectedAmount, 
+                    volume: selectedVolume,
+                    phone_number: phoneNumber 
+                }})
             }});
 
             const data = await response.json();
@@ -268,6 +291,17 @@ async def read_root():
         }} catch (e) {{
             alert("서버 통신 실패: " + e.message);
         }}
+    }}
+
+    // 📱 SMS 전송 버튼 클릭 함수
+    function sendSmsLink() {{
+        const phone = document.getElementById('phoneInput').value.replace(/[^0-9]/g, '');
+        if (!phone || phone.length < 10) {{
+            alert("올바른 휴대폰 번호를 입력해 주세요.");
+            return;
+        }}
+        startPayment(phone);
+        alert(`${{phone}} 번호로 결제 링크 SMS 발송을 요청했습니다.`);
     }}
 
     async function checkPaymentStatus() {{
@@ -355,7 +389,7 @@ async def read_root():
     return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 # ==================================================
-# 2. 결제 상태 제어 API (신규 추가: Reset & Status)
+# 2. 결제 상태 제어 API (Reset & Status)
 # ==================================================
 @app.post("/api/payment/reset")
 async def reset_payment(req: Optional[ResetRequest] = None):
@@ -377,7 +411,7 @@ async def get_payment_status():
     return latest_payment
 
 # ==================================================
-# 3. KICC 결제 URL 생성 API
+# 3. KICC 결제 URL 생성 API (sndMobileNo 추가)
 # ==================================================
 @app.post("/api/kicc/create-order")
 async def create_kicc_order(pay_req: PayRequest):
@@ -387,17 +421,23 @@ async def create_kicc_order(pay_req: PayRequest):
     
     order_no = f"ORD_{uuid.uuid4().hex[:12].upper()}"
     
+    direct_reg_info = {
+        "mallId": MALL_ID,
+        "regTxtype": "52",
+        "regSubtype": "10",
+        "amount": pay_req.amount,
+        "currency": "00",
+        "payCode": "11",
+        "sndUrl": f"{BASE_URL}/pay-complete",
+        "notiUrl": f"{BASE_URL}/api/kicc/webhook"
+    }
+
+    # 📱 휴대폰 번호 입력 시 KICC 파라미터(sndMobileNo) 추가
+    if pay_req.phone_number:
+        direct_reg_info["sndMobileNo"] = pay_req.phone_number
+
     payload = {
-        "directRegInfo": {
-            "mallId": MALL_ID,
-            "regTxtype": "52",
-            "regSubtype": "10",
-            "amount": pay_req.amount,
-            "currency": "00",
-            "payCode": "11",
-            "sndUrl": f"{BASE_URL}/pay-complete",
-            "notiUrl": f"{BASE_URL}/api/kicc/webhook"
-        },
+        "directRegInfo": direct_reg_info,
         "directOrderInfo": {
             "shopOrderNo": order_no,
             "goodsName": f"EV_{pay_req.volume}",
