@@ -8,12 +8,14 @@ from pydantic import BaseModel
 app = FastAPI(title="Kiosk Payment Service")
 
 # --------------------------------------------------
-# 🔑 KICC 가이드 문서 규격 설정
+# 🔑 KICC 가이드 문서 규격 설정 및 충전 단가 설정
 # --------------------------------------------------
 KICC_MID = "T2506894"  # 가맹점 MID
-# KICC 테스트 도메인 및 엔드포인트
 KICC_URL_PAY_REG_API = "https://testpgapi.easypay.co.kr/directapi/trades/directSmsUrlPayReg"
 BASE_URL = "https://qrtetst.onrender.com"
+
+# 충전 단가 설정 (원/kWh)
+UNIT_PRICE = 350
 
 order_db = {}
 latest_payment = {
@@ -31,78 +33,79 @@ class PayRequest(BaseModel):
 # 1. 키오스크 메인 UI
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    return """<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>키오스크 충전 결제 서비스</title>
+    <title>전기차 충전 결제 키오스크</title>
     <style>
-        * { box-sizing: border-box; }
-        body { font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; text-align: center; padding: 40px 20px; background: #f0f2f5; margin: 0; }
-        .card { max-width: 480px; margin: 0 auto; background: white; padding: 35px 25px; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); }
-        h2 { margin-top: 0; color: #1a1a1a; font-size: 24px; font-weight: 700; }
-        .sub-text { color: #666; font-size: 15px; margin-bottom: 25px; }
+        * {{ box-sizing: border-box; }}
+        body {{ font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; text-align: center; padding: 40px 20px; background: #f0f2f5; margin: 0; }}
+        .card {{ max-width: 500px; margin: 0 auto; background: white; padding: 35px 25px; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); }}
+        h2 {{ margin-top: 0; color: #1a1a1a; font-size: 24px; font-weight: 700; }}
+        .unit-price-badge {{ display: inline-block; background: #e7f1ff; color: #007bff; font-weight: 600; font-size: 14px; padding: 6px 14px; border-radius: 20px; margin-bottom: 20px; }}
         
-        .btn-group { display: flex; gap: 12px; justify-content: center; margin-bottom: 12px; }
-        .option-btn { flex: 1; padding: 16px 10px; border: 2px solid #e1e4e8; background: #fff; border-radius: 12px; cursor: pointer; font-weight: 600; font-size: 15px; color: #444; transition: all 0.2s ease; }
-        .option-btn:hover { border-color: #007bff; color: #007bff; }
-        .option-btn.active { background: #007bff; color: white; border-color: #007bff; box-shadow: 0 4px 12px rgba(0,123,255,0.3); }
-        .price-text { font-size: 13px; opacity: 0.85; margin-top: 4px; font-weight: 400; }
+        .btn-group {{ display: flex; gap: 12px; justify-content: center; margin-bottom: 15px; }}
+        .option-btn {{ flex: 1; padding: 18px 10px; border: 2px solid #e1e4e8; background: #fff; border-radius: 12px; cursor: pointer; font-weight: 700; font-size: 17px; color: #333; transition: all 0.2s ease; }}
+        .option-btn:hover {{ border-color: #007bff; color: #007bff; }}
+        .option-btn.active {{ background: #007bff; color: white; border-color: #007bff; box-shadow: 0 4px 12px rgba(0,123,255,0.3); }}
+        .price-text {{ font-size: 13.5px; opacity: 0.9; margin-top: 6px; font-weight: 500; }}
         
-        .notice-text { font-size: 12.5px; color: #888; margin-bottom: 24px; text-align: center; word-break: keep-all; line-height: 1.4; background: #f8f9fa; padding: 8px 12px; border-radius: 6px; }
+        .notice-box {{ font-size: 13px; color: #555; margin-bottom: 24px; text-align: left; word-break: keep-all; line-height: 1.5; background: #f8f9fa; border-left: 4px solid #007bff; padding: 12px 14px; border-radius: 4px; }}
         
-        .pay-btn { width: 100%; padding: 18px; background: #28a745; color: white; font-size: 18px; font-weight: 700; border: none; border-radius: 12px; cursor: pointer; transition: background 0.2s ease; box-shadow: 0 4px 12px rgba(40,167,69,0.3); }
-        .pay-btn:hover { background: #218838; }
+        .pay-btn {{ width: 100%; padding: 18px; background: #28a745; color: white; font-size: 18px; font-weight: 700; border: none; border-radius: 12px; cursor: pointer; transition: background 0.2s ease; box-shadow: 0 4px 12px rgba(40,167,69,0.3); }}
+        .pay-btn:hover {{ background: #218838; }}
         
-        .status-box { display: none; margin-top: 25px; padding: 20px; border-radius: 12px; background: #f8f9fa; border: 1px solid #e9ecef; }
-        .qr-img { width: 220px; height: 220px; margin: 15px auto; border: 4px solid #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: block; }
-        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; display: inline-block; vertical-align: middle; margin-right: 8px; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .status-box {{ display: none; margin-top: 25px; padding: 20px; border-radius: 12px; background: #f8f9fa; border: 1px solid #e9ecef; }}
+        .qr-img {{ width: 220px; height: 220px; margin: 15px auto; border: 4px solid #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: block; }}
+        .spinner {{ border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; display: inline-block; vertical-align: middle; margin-right: 8px; }}
+        @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
 
-        .result-box { display: none; background: #f0fff4; border: 2px solid #28a745; border-radius: 12px; padding: 25px 20px; margin-top: 25px; animation: fadeIn 0.3s ease-in-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .result-box h3 { color: #28a745; margin: 0 0 15px 0; font-size: 20px; }
-        .card-info { font-size: 15px; color: #333; margin: 15px 0; background: white; padding: 15px; border-radius: 8px; border: 1px solid #d4edda; text-align: left; line-height: 1.8; }
-        .card-info p { margin: 4px 0; display: flex; justify-content: space-between; }
-        .card-info span.value { font-weight: 600; color: #1a1a1a; }
-        .charging-msg { font-size: 20px; font-weight: 700; color: #007bff; margin-top: 20px; letter-spacing: -0.5px; }
-        .timer { font-size: 14px; color: #666; margin-top: 8px; }
-        .timer-num { font-weight: bold; color: #dc3545; font-size: 16px; }
+        .result-box {{ display: none; background: #f0fff4; border: 2px solid #28a745; border-radius: 12px; padding: 25px 20px; margin-top: 25px; animation: fadeIn 0.3s ease-in-out; }}
+        @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+        .result-box h3 {{ color: #28a745; margin: 0 0 15px 0; font-size: 20px; }}
+        .card-info {{ font-size: 15px; color: #333; margin: 15px 0; background: white; padding: 15px; border-radius: 8px; border: 1px solid #d4edda; text-align: left; line-height: 1.8; }}
+        .card-info p {{ margin: 4px 0; display: flex; justify-content: space-between; }}
+        .card-info span.value {{ font-weight: 600; color: #1a1a1a; }}
+        .charging-msg {{ font-size: 19px; font-weight: 700; color: #007bff; margin-top: 20px; letter-spacing: -0.5px; }}
+        .timer {{ font-size: 14px; color: #666; margin-top: 8px; }}
+        .timer-num {{ font-weight: bold; color: #dc3545; font-size: 16px; }}
     </style>
 </head>
 <body>
 
 <div class="card">
-    <h2>⚡ 충전량 및 금액 선택</h2>
-    <p class="sub-text">원하시는 충전 옵션을 선택한 후 결제를 진행해 주세요.</p>
+    <h2>⚡ 충전 목표량 선택</h2>
+    <div class="unit-price-badge">현재 충전 단가: {UNIT_PRICE:,}원 / kWh</div>
     
     <div class="btn-group">
-        <button class="option-btn active" onclick="selectOption(this, '20kWh', 10000)">
+        <button class="option-btn active" onclick="selectOption(this, '20kWh', {20 * UNIT_PRICE})">
             20 kWh
-            <div class="price-text">10,000원</div>
+            <div class="price-text">{(20 * UNIT_PRICE):,}원</div>
         </button>
-        <button class="option-btn" onclick="selectOption(this, '40kWh', 20000)">
+        <button class="option-btn" onclick="selectOption(this, '40kWh', {40 * UNIT_PRICE})">
             40 kWh
-            <div class="price-text">20,000원</div>
+            <div class="price-text">{(40 * UNIT_PRICE):,}원</div>
         </button>
-        <button class="option-btn" onclick="selectOption(this, '60kWh', 30000)">
+        <button class="option-btn" onclick="selectOption(this, '60kWh', {60 * UNIT_PRICE})">
             60 kWh
-            <div class="price-text">30,000원</div>
+            <div class="price-text">{(60 * UNIT_PRICE):,}원</div>
         </button>
     </div>
 
-    <div class="notice-text">
-        💡 목표 충전량에 도달하지 않은 경우, 남은 충전금액은 부분취소 됩니다.
+    <div class="notice-box">
+        💡 <b>안내사항</b><br>
+        목표 충전량에 도달하지 않고 중단된 경우, 실제 충전된 양만큼만 최종 정산되며 남은 금액은 자동으로 부분취소 처리됩니다.
     </div>
 
     <button id="payStartBtn" class="pay-btn" onclick="startPayment()">결제 및 충전 시작</button>
 
     <div id="statusBox" class="status-box">
-        <h4 style="margin:0; color:#333;">스마트폰 카메라인 앱카드로 스캔하세요</h4>
+        <h4 style="margin:0; color:#333;">스마트폰 카메라 또는 앱카드로 QR을 스캔하세요</h4>
         <img id="qrImage" class="qr-img" src="" alt="KICC 결제 QR코드">
-        <p style="margin: 5px 0 0 0; font-size: 14px; color: #495057; font-weight: 600;">
-            <span class="spinner"></span>KICC 결제 승인 수신 대기 중...
+        <p style="margin: 8px 0 0 0; font-size: 14px; color: #495057; font-weight: 600;">
+            <span class="spinner"></span>KICC 결제 승인 확인 중...
         </p>
     </div>
 
@@ -111,40 +114,40 @@ async def read_root():
         <div class="card-info">
             <p><span>결제 카드</span><span id="cardName" class="value">-</span></p>
             <p><span>카드 번호</span><span id="cardNo" class="value">-</span></p>
-            <p><span>선택 충전량</span><span id="payVolume" class="value">-</span></p>
-            <p><span>결제 금액</span><span id="payAmount" class="value">-</span></p>
+            <p><span>목표 충전량</span><span id="payVolume" class="value">-</span></p>
+            <p><span>선결제 금액</span><span id="payAmount" class="value">-</span></p>
         </div>
-        <div class="charging-msg">🔌 5초 후 충전을 시작합니다...</div>
-        <div class="timer"><span id="countdown" class="timer-num">5</span>초 후 화면이 자동으로 전환됩니다.</div>
+        <div class="charging-msg">🔌 5초 후 커넥터 승인이 시작됩니다...</div>
+        <div class="timer"><span id="countdown" class="timer-num">5</span>초 후 화면이 리셋됩니다.</div>
     </div>
 </div>
 
 <script>
     let selectedVolume = "20kWh";
-    let selectedAmount = 10000;
+    let selectedAmount = {20 * UNIT_PRICE};
     let pollInterval = null;
 
-    function selectOption(btn, volume, amount) {
+    function selectOption(btn, volume, amount) {{
         document.querySelectorAll('.option-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         selectedVolume = volume;
         selectedAmount = amount;
-    }
+    }}
 
-    async function startPayment() {
-        await fetch('/api/payment/reset', { method: 'POST' });
+    async function startPayment() {{
+        await fetch('/api/payment/reset', {{ method: 'POST' }});
         
-        try {
-            const response = await fetch('/api/kicc/create-order', {
+        try {{
+            const response = await fetch('/api/kicc/create-order', {{
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ amount: selectedAmount, volume: selectedVolume })
-            });
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ amount: selectedAmount, volume: selectedVolume }})
+            }});
             const data = await response.json();
 
-            if (data.pay_url) {
+            if (data.pay_url) {{
                 const qrData = encodeURIComponent(data.pay_url);
-                document.getElementById('qrImage').src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${qrData}`;
+                document.getElementById('qrImage').src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${{qrData}}`;
                 
                 document.getElementById('statusBox').style.display = 'block';
                 document.getElementById('resultBox').style.display = 'none';
@@ -152,30 +155,30 @@ async def read_root():
                 
                 if(pollInterval) clearInterval(pollInterval);
                 pollInterval = setInterval(checkPaymentStatus, 1000);
-            } else {
+            }} else {{
                 alert("KICC 결제 URL 생성 실패: " + (data.msg || "응답 오류"));
-            }
-        } catch (e) {
-            alert("서버 연결 실패: " + e.message);
-        }
-    }
+            }}
+        }} catch (e) {{
+            alert("서버 통신 실패: " + e.message);
+        }}
+    }}
 
-    async function checkPaymentStatus() {
-        try {
+    async function checkPaymentStatus() {{
+        try {{
             const res = await fetch('/api/payment/status');
             const data = await res.json();
 
-            if (data.status === "SUCCESS") {
+            if (data.status === "SUCCESS") {{
                 clearInterval(pollInterval);
                 document.getElementById('statusBox').style.display = 'none';
                 showSuccessUI(data);
-            }
-        } catch (e) {
-            console.error("상태 확인 실패:", e);
-        }
-    }
+            }}
+        }} catch (e) {{
+            console.error("상태 확인 오류:", e);
+        }}
+    }}
 
-    function showSuccessUI(data) {
+    function showSuccessUI(data) {{
         document.getElementById('cardName').innerText = data.card_name || "신용카드";
         document.getElementById('cardNo').innerText = data.card_no || "****-****-****-****";
         document.getElementById('payAmount').innerText = selectedAmount.toLocaleString() + "원";
@@ -186,23 +189,23 @@ async def read_root():
         let seconds = 5;
         const countElem = document.getElementById('countdown');
 
-        const timer = setInterval(() => {
+        const timer = setInterval(() => {{
             seconds--;
             countElem.innerText = seconds;
 
-            if (seconds <= 0) {
+            if (seconds <= 0) {{
                 clearInterval(timer);
                 alert("⚡ 충전이 시작되었습니다!");
                 location.reload();
-            }
-        }, 1000);
-    }
+            }}
+        }}, 1000);
+    }}
 </script>
 
 </body>
 </html>"""
 
-# 2. 공식 문서(register-tx) 보완 규격 적용 KICC 결제 등록 요청
+# 2. KICC 결제 등록 API
 @app.post("/api/kicc/create-order")
 async def create_kicc_order(pay_req: PayRequest):
     global latest_payment
@@ -216,7 +219,7 @@ async def create_kicc_order(pay_req: PayRequest):
         "status": "PENDING"
     }
 
-    # KICC URL/SMS 결제 등록 API 필수 규격
+    # KICC URL/SMS 결제 등록 API 규격
     payload = {
         "mall_id": KICC_MID,
         "shop_order_no": order_no,
@@ -224,11 +227,11 @@ async def create_kicc_order(pay_req: PayRequest):
         "goods_name": f"전기차 충전 {pay_req.volume}",
         "pay_method": "11",        # 신용카드
         "msg_type": "URL",          # [필수] URL 형태 결제창 요청
-        "char_set": "UTF-8",        # 문자셋
+        "char_set": "UTF-8",
         "currency": "00",           # 원화 (KRW)
         "noti_url": f"{BASE_URL}/api/kicc/webhook",
         "return_url": f"{BASE_URL}/pay-complete",
-        "trans_type": "00"         # 일반승인
+        "trans_type": "00"
     }
 
     headers = {
@@ -244,7 +247,6 @@ async def create_kicc_order(pay_req: PayRequest):
             print("\n📥 === [KICC URL/SMS 결제 등록 응답] ===")
             print(json.dumps(res_data, indent=2, ensure_ascii=False))
 
-            # 응답 필드에서 모바일 결제 URL 추출
             pay_url = res_data.get("auth_pay_url") or res_data.get("pay_url") or res_data.get("authPayUrl") or res_data.get("res_data", {}).get("auth_pay_url")
 
             if pay_url:
@@ -258,7 +260,7 @@ async def create_kicc_order(pay_req: PayRequest):
         print(f"❌ KICC API 통신 에러: {e}")
         return {"result": "FAIL", "msg": str(e)}
 
-# 3. KICC 결제 완료 모바일 리다이렉트 랜딩
+# 3. KICC 결제 완료 모바일 랜딩 페이지
 @app.all("/pay-complete", response_class=HTMLResponse)
 async def pay_complete():
     return """<!DOCTYPE html>
@@ -282,7 +284,7 @@ async def pay_complete():
 </body>
 </html>"""
 
-# 4. KICC 노티(웹훅) 수신 엔드포인트
+# 4. KICC 노티(웹훅) 수신
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
     global latest_payment
@@ -294,7 +296,7 @@ async def kicc_webhook(request: Request):
             form_data = await request.form()
             data = dict(form_data)
 
-        print("\n📥 === [KICC 노티 수신] ===")
+        print("\n📥 === [KICC 웹훅 수신] ===")
         print(json.dumps(data, indent=2, ensure_ascii=False))
 
         res_cd = data.get("resCd") or data.get("res_cd")
@@ -309,15 +311,14 @@ async def kicc_webhook(request: Request):
 
             if shop_order_no and shop_order_no in order_db:
                 order_db[shop_order_no]["status"] = "PAID"
-                print(f"✅ [주문 완료 처리] {shop_order_no}")
 
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
     except Exception as e:
-        print(f"❌ [웹훅 처리 중 에러]: {e}")
+        print(f"❌ [웹훅 에러]: {e}")
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
-# 5. 상태 조회 및 리셋
+# 5. 결제 상태 조회 및 리셋
 @app.get("/api/payment/status")
 async def get_payment_status():
     return latest_payment
