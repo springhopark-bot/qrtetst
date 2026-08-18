@@ -168,7 +168,7 @@ async def read_root():
             <p><span>목표 충전량</span><span id="payVolume" class="value">-</span></p>
             <p><span>선결제 금액</span><span id="payAmount" class="value">-</span></p>
         </div>
-        <div class="charging-msg">🔌 5초 후 커넥터 승인이 시작됩니다...</div>
+        <div class="charging-msg">🔌 충전을 시작합니다...</div>
         <div class="timer"><span id="countdown" class="timer-num">5</span>초 후 화면이 리셋됩니다.</div>
     </div>
 </div>
