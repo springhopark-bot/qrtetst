@@ -1,5 +1,4 @@
-import json
-import time
+import uuid
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -10,8 +9,8 @@ app = FastAPI(title="Kiosk Payment Service")
 # --------------------------------------------------
 # 🔑 KICC 가이드 문서 규격 설정 및 충전 단가 설정
 # --------------------------------------------------
-KICC_MID = "T2506894"  # 가맹점 MID
-KICC_URL_PAY_REG_API = "https://testpgapi.easypay.co.kr/directapi/trades/directSmsUrlPayReg"
+MALL_ID = "T2506894"  # 가맹점 MID
+KICC_API_URL = "https://testpgapi.easypay.co.kr/directapi/trades/directSmsUrlPayReg"
 BASE_URL = "https://qrtetst.onrender.com"
 
 # 충전 단가 설정 (원/kWh)
@@ -147,17 +146,10 @@ async def read_root():
                 body: JSON.stringify({{ amount: selectedAmount, volume: selectedVolume }})
             }});
 
-            const text = await response.text();
-            let data;
-            try {{
-                data = JSON.parse(text);
-            }} catch (jsonErr) {{
-                alert("서버 응답 파싱 오류: " + text);
-                return;
-            }}
+            const data = await response.json();
 
-            if (data.pay_url) {{
-                const qrData = encodeURIComponent(data.pay_url);
+            if (data.success && data.payUrl) {{
+                const qrData = encodeURIComponent(data.payUrl);
                 document.getElementById('qrImage').src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${{qrData}}`;
                 
                 document.getElementById('statusBox').style.display = 'block';
@@ -167,7 +159,7 @@ async def read_root():
                 if(pollInterval) clearInterval(pollInterval);
                 pollInterval = setInterval(checkPaymentStatus, 1000);
             }} else {{
-                alert("KICC 결제 URL 생성 실패: " + (data.msg || "응답 오류"));
+                alert("KICC 결제 URL 생성 실패: " + (data.msg || "알 수 없는 오류"));
             }}
         }} catch (e) {{
             alert("서버 통신 실패: " + e.message);
@@ -217,64 +209,82 @@ async def read_root():
 </html>"""
     return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
-# 2. KICC 결제 등록 API (보정된 결제 요청 페이로드)
+# 2. KICC 결제 URL 생성 API
 @app.post("/api/kicc/create-order")
 async def create_kicc_order(pay_req: PayRequest):
     global latest_payment
     latest_payment["amount"] = pay_req.amount
     latest_payment["volume"] = pay_req.volume
     
-    order_no = f"ORD{int(time.time())}"
-    order_db[order_no] = {
-        "amount": pay_req.amount,
-        "volume": pay_req.volume,
-        "status": "PENDING"
-    }
-
-    # KICC 표준 Direct SMS/URL Pay 규격 전문
+    order_no = f"ORD_{uuid.uuid4().hex[:12].upper()}"
+    
     payload = {
-        "mall_id": KICC_MID,
-        "shop_order_no": order_no,
-        "amount": str(pay_req.amount),
-        "goods_name": f"EVCharge_{pay_req.volume}",  # 특수문자 제거(공백/한글 인코딩 오류 예방)
-        "pay_method": "11",                          # 신용카드 결제
-        "msg_type": "URL",
-        "char_set": "UTF-8",
-        "currency": "00",
-        "noti_url": f"{BASE_URL}/api/kicc/webhook",
-        "return_url": f"{BASE_URL}/pay-complete",
-        "trans_type": "00"
+        "directRegInfo": {
+            "mallId": MALL_ID,
+            "regTxtype": "52",       # 52: 결제 URL 생성요청
+            "regSubtype": "10",      # 10: 신규등록
+            "amount": str(pay_req.amount),
+            "currency": "00",
+            "payCode": "00",
+            "sndUrl": f"{BASE_URL}/pay-complete",
+            "notiUrl": f"{BASE_URL}/api/kicc/webhook",
+            "rcvrSmsCntn": f"전기차 충전({pay_req.volume}) 결제 링크"
+        },
+        "directOrderInfo": {
+            "shopOrderNo": order_no,
+            "goodsName": f"전기차 충전 {pay_req.volume}",
+            "goodsAmount": str(pay_req.amount)
+        }
     }
 
     headers = {
-        "Content-Type": "application/json; charset=utf-8",
-        "Accept": "application/json"
+        "Content-Type": "application/json; charset=utf-8"
     }
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(KICC_URL_PAY_REG_API, json=payload, headers=headers)
-            res_data = response.json()
+            response = await client.post(KICC_API_URL, json=payload, headers=headers)
+            
+            # JSON 응답 파싱
+            try:
+                res_data = response.json()
+            except Exception:
+                return {
+                    "success": False, 
+                    "msg": f"KICC 비정상 응답 (HTTP {response.status_code})"
+                }
 
-            print("[KICC API RESPONSE]:", res_data)
+            print("[KICC Response]:", res_data)
 
-            # URL 파싱 경로 통합 점검
+            res_cd = res_data.get("resCd") or res_data.get("res_cd")
+            res_msg = res_data.get("resMsg") or res_data.get("res_msg") or "결제 URL 생성 실패"
+
+            # URL 변수 파싱 (여러 규격 필드 대응)
             pay_url = (
-                res_data.get("auth_pay_url") 
+                res_data.get("authPageUrl") 
+                or res_data.get("auth_pay_url") 
                 or res_data.get("pay_url") 
-                or res_data.get("authPayUrl") 
-                or (res_data.get("res_data", {}) or {}).get("auth_pay_url")
+                or res_data.get("payUrl")
             )
 
-            if pay_url:
-                return {"result": "SUCCESS", "pay_url": pay_url}
+            if res_cd == "0000" or pay_url:
+                order_db[order_no] = {
+                    "status": "PENDING", 
+                    "amount": pay_req.amount,
+                    "volume": pay_req.volume
+                }
+                return {
+                    "success": True,
+                    "orderNo": order_no,
+                    "payUrl": pay_url
+                }
             else:
-                res_cd = res_data.get("res_cd") or res_data.get("resCd") or "FAIL"
-                res_msg = res_data.get("res_msg") or res_data.get("resMsg") or "URL 생성 오류"
-                return {"result": "FAIL", "msg": f"[{res_cd}] {res_msg}"}
-
+                return {
+                    "success": False, 
+                    "msg": f"[{res_cd}] {res_msg}"
+                }
     except Exception as e:
-        return {"result": "FAIL", "msg": str(e)}
+        return {"success": False, "msg": f"통신 장애: {str(e)}"}
 
 # 3. KICC 결제 완료 랜딩
 @app.api_route("/pay-complete", methods=["GET", "POST"], response_class=HTMLResponse)
