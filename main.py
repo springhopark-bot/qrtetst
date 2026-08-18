@@ -146,7 +146,15 @@ async def read_root():
                 headers: {{ 'Content-Type': 'application/json' }},
                 body: JSON.stringify({{ amount: selectedAmount, volume: selectedVolume }})
             }});
-            const data = await response.json();
+
+            const text = await response.text();
+            let data;
+            try {{
+                data = JSON.parse(text);
+            }} catch (jsonErr) {{
+                alert("서버 응답 파싱 오류: " + text);
+                return;
+            }}
 
             if (data.pay_url) {{
                 const qrData = encodeURIComponent(data.pay_url);
@@ -259,7 +267,7 @@ async def create_kicc_order(pay_req: PayRequest):
     except Exception as e:
         return {"result": "FAIL", "msg": str(e)}
 
-# 3. KICC 결제 완료 랜딩 (api_route로 문법 에러 수정)
+# 3. KICC 결제 완료 랜딩
 @app.api_route("/pay-complete", methods=["GET", "POST"], response_class=HTMLResponse)
 async def pay_complete():
     return """<!DOCTYPE html>
