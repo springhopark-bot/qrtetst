@@ -30,7 +30,7 @@ class PayRequest(BaseModel):
     amount: int
     volume: str
 
-# 1. 키오스크 메인 UI (캐시 방지 헤더 추가)
+# 1. 키오스크 메인 UI (캐시 방지 헤더 적용)
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     content = f"""<!DOCTYPE html>
@@ -259,8 +259,8 @@ async def create_kicc_order(pay_req: PayRequest):
     except Exception as e:
         return {"result": "FAIL", "msg": str(e)}
 
-# 3. KICC 결제 완료 랜딩
-@app.all("/pay-complete", response_class=HTMLResponse)
+# 3. KICC 결제 완료 랜딩 (api_route로 문법 에러 수정)
+@app.api_route("/pay-complete", methods=["GET", "POST"], response_class=HTMLResponse)
 async def pay_complete():
     return """<!DOCTYPE html>
 <html lang="ko">
