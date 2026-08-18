@@ -8,10 +8,11 @@ from pydantic import BaseModel
 app = FastAPI(title="Kiosk Payment Service")
 
 # --------------------------------------------------
-# 🔑 KICC PG 설정 (실제 API 정보)
+# 🔑 KICC 설정 (다이렉트 API 규격)
 # --------------------------------------------------
-KICC_MID = "T2506894"  # 제공해주신 KICC MID
-KICC_API_URL = "https://testpgapi.easypay.co.kr/api/trade/pay"  # KICC 테스트 서버 API 주소
+KICC_MID = "T2506894"  # 제공받은 가맹점 ID
+# KICC 개발/테스트용 다이렉트 API 엔드포인트
+KICC_DIRECT_API_URL = "https://testpgapi.easypay.co.kr/directapi/trades/directSmsUrlPayReg"
 BASE_URL = "https://qrtetst.onrender.com"
 
 order_db = {}
@@ -152,7 +153,7 @@ async def read_root():
                 if(pollInterval) clearInterval(pollInterval);
                 pollInterval = setInterval(checkPaymentStatus, 1000);
             } else {
-                alert("KICC 결제 URL 생성 실패: " + (data.msg || "알 수 없는 오류"));
+                alert("KICC 결제 URL 생성 실패: " + (data.msg || "KICC 응답 확인 필요"));
             }
         } catch (e) {
             alert("서버 연결 실패: " + e.message);
@@ -201,7 +202,7 @@ async def read_root():
 </body>
 </html>"""
 
-# 2. KICC 전문 호출 API (실제 PG 주소 획득)
+# 2. directSmsUrlPayReg 규격 KICC 주문 생성
 @app.post("/api/kicc/create-order")
 async def create_kicc_order(pay_req: PayRequest):
     global latest_payment
@@ -215,38 +216,39 @@ async def create_kicc_order(pay_req: PayRequest):
         "status": "PENDING"
     }
 
-    # KICC EasyPay 거래등록 API 전문 바디
-    kicc_payload = {
-        "mallId": KICC_MID,
-        "shopOrderNo": order_no,
+    # directSmsUrlPayReg 전문 요청 바디
+    payload = {
+        "mall_id": KICC_MID,
+        "shop_order_no": order_no,
         "amount": str(pay_req.amount),
-        "goodsName": f"전기차 충전 {pay_req.volume}",
-        "payMethod": "11",  # 신용카드
-        "returnUrl": f"{BASE_URL}/api/kicc/webhook",
-        "notiUrl": f"{BASE_URL}/api/kicc/webhook"
+        "goods_name": f"전기차 충전 {pay_req.volume}",
+        "pay_method": "11",  # 신용카드
+        "noti_url": f"{BASE_URL}/api/kicc/webhook",
+        "return_url": f"{BASE_URL}/api/kicc/webhook",
+        "trans_type": "00"  # 일반승인
     }
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(KICC_API_URL, json=kicc_payload)
+            response = await client.post(KICC_DIRECT_API_URL, json=payload)
             res_data = response.json()
-            print("📥 KICC API Response:", res_data)
+            print("\n📥 === [KICC directSmsUrlPayReg 응답] ===")
+            print(json.dumps(res_data, indent=2, ensure_ascii=False))
 
-            # KICC 응답에서 실제 PG 결제창 URL 추출
-            pay_url = res_data.get("payUrl") or res_data.get("resData", {}).get("payUrl")
+            # 응답 필드 중 URL 파싱 (auth_pay_url 또는 pay_url)
+            pay_url = res_data.get("auth_pay_url") or res_data.get("pay_url") or res_data.get("authPayUrl")
 
             if pay_url:
                 return {"result": "SUCCESS", "pay_url": pay_url}
             else:
-                # KICC API 응답에 payUrl이 없는 경우 예외 처리
-                print("⚠️ KICC payUrl 생성 실패, 응답:", res_data)
-                return {"result": "FAIL", "msg": res_data.get("resMsg", "KICC 결제 URL 응답 없음")}
+                msg = res_data.get("res_msg") or res_data.get("resMsg") or "URL 생성 실패"
+                return {"result": "FAIL", "msg": f"[{res_data.get('res_cd', 'ERROR')}] {msg}"}
 
     except Exception as e:
-        print("❌ KICC API 통신 에러:", str(e))
+        print(f"❌ KICC Direct API 통신 실패: {e}")
         return {"result": "FAIL", "msg": str(e)}
 
-# 3. KICC 웹훅 수신
+# 3. KICC 노티(웹훅) 수신 엔드포인트
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
     global latest_payment
@@ -258,32 +260,34 @@ async def kicc_webhook(request: Request):
             form_data = await request.form()
             data = dict(form_data)
 
-        print("📥 웹훅 데이터 수신:", data)
+        print("\n📥 === [KICC 노티 데이터 수신 완료] ===")
+        print(json.dumps(data, indent=2, ensure_ascii=False))
 
         res_cd = data.get("resCd") or data.get("res_cd")
         shop_order_no = data.get("shopOrderNo") or data.get("shop_order_no")
-        card_name = data.get("cardName") or data.get("card_name") or "신용카드"
-        card_no = data.get("cardNo") or data.get("card_no") or "****-****-****-****"
+        card_name = data.get("card_name") or data.get("cardName") or "신용카드"
+        card_no = data.get("card_no") or data.get("cardNo") or "****-****-****-****"
 
         if res_cd == "0000":
             latest_payment["status"] = "SUCCESS"
             latest_payment["card_name"] = card_name
             latest_payment["card_no"] = card_no
-            
+
             if shop_order_no and shop_order_no in order_db:
                 order_db[shop_order_no]["status"] = "PAID"
+                print(f"✅ [주문 상태 변경 완료] {shop_order_no} -> PAID")
 
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
     except Exception as e:
+        print(f"❌ [웹훅 처리 에러]: {e}")
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
-# 4. 프론트엔드 상태 조회 API
+# 4. 상태 조회 및 리셋 API
 @app.get("/api/payment/status")
 async def get_payment_status():
     return latest_payment
 
-# 5. 상태 리셋 API
 @app.post("/api/payment/reset")
 async def reset_payment():
     global latest_payment
