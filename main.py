@@ -16,15 +16,21 @@ BASE_URL = "https://qrtetst.onrender.com"
 # 충전 단가 설정 (원/kWh)
 UNIT_PRICE = 350
 
-# 주문별 결제 상태 저장소 (주문번호를 키로 사용하여 혼선 방지)
 order_db = {}
+latest_payment = {
+    "status": "PENDING",
+    "amount": 0,
+    "volume": "",
+    "card_name": "",
+    "card_no": ""
+}
 
 class PayRequest(BaseModel):
     amount: int
     volume: str
 
 # ==================================================
-# 1. 키오스크 메인 UI
+# 1. 키오스크 메인 UI (캐시 방지 헤더 적용)
 # ==================================================
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -126,7 +132,6 @@ async def read_root():
 <script>
     let selectedVolume = "20kWh";
     let selectedAmount = {20 * UNIT_PRICE};
-    let currentOrderNo = null;
     let pollInterval = null;
     let qrTimeoutTimer = null;
     let qrLeftSeconds = 60;
@@ -144,6 +149,7 @@ async def read_root():
     }}
 
     async function startPayment() {{
+        await fetch('/api/payment/reset', {{ method: 'POST' }});
         resetAllTimers();
         
         try {{
@@ -156,7 +162,6 @@ async def read_root():
             const data = await response.json();
 
             if (data.success && data.payUrl) {{
-                currentOrderNo = data.orderNo; // 현재 생성된 주문번호 보관
                 const qrData = encodeURIComponent(data.payUrl);
                 document.getElementById('qrImage').src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${{qrData}}`;
                 
@@ -179,7 +184,7 @@ async def read_root():
                     }}
                 }}, 1000);
 
-                // 주문번호 기반 폴링 시작
+                // 결제 승인 폴링 (1초 주기)
                 pollInterval = setInterval(checkPaymentStatus, 1000);
             }} else {{
                 alert("KICC 결제 URL 생성 실패: " + (data.msg || "오류 발생"));
@@ -190,12 +195,11 @@ async def read_root():
     }}
 
     async function checkPaymentStatus() {{
-        if (!currentOrderNo) return;
         try {{
-            const res = await fetch(`/api/payment/status?orderNo=${{currentOrderNo}}`);
+            const res = await fetch('/api/payment/status');
             const data = await res.json();
 
-            if (data.status === "PAID") {{
+            if (data.status === "SUCCESS") {{
                 resetAllTimers();
                 document.getElementById('statusBox').style.display = 'none';
                 showSuccessUI(data);
@@ -206,6 +210,7 @@ async def read_root():
     }}
 
     function showSuccessUI(data) {{
+        // acquirerName 또는 노티에서 파싱된 카드 정보 주입
         const cardNameElem = document.getElementById('cardName');
         cardNameElem.innerText = (data.card_name && data.card_name.trim() !== "") ? data.card_name : "신용카드";
 
@@ -240,17 +245,12 @@ async def read_root():
 # ==================================================
 @app.post("/api/kicc/create-order")
 async def create_kicc_order(pay_req: PayRequest):
+    global latest_payment
+    latest_payment["amount"] = pay_req.amount
+    latest_payment["volume"] = pay_req.volume
+    
     order_no = f"ORD_{uuid.uuid4().hex[:12].upper()}"
     
-    # 주문번호별 독립 데이터 저장
-    order_db[order_no] = {
-        "status": "PENDING", 
-        "amount": pay_req.amount,
-        "volume": pay_req.volume,
-        "card_name": "",
-        "card_no": ""
-    }
-
     payload = {
         "directRegInfo": {
             "mallId": MALL_ID,
@@ -276,6 +276,11 @@ async def create_kicc_order(pay_req: PayRequest):
         print("[KICC DirectReg Response]:", res_data)
 
         if res_data.get("resCd") == "0000":
+            order_db[order_no] = {
+                "status": "PENDING", 
+                "amount": pay_req.amount,
+                "volume": pay_req.volume
+            }
             return {
                 "success": True,
                 "orderNo": order_no,
@@ -290,7 +295,7 @@ async def create_kicc_order(pay_req: PayRequest):
         return {"success": False, "msg": str(e)}
 
 # ==================================================
-# 3. KICC 결제 완료 랜딩 페이지
+# 3. KICC 결제 완료 랜딩 페이지 (모바일 화면용)
 # ==================================================
 @app.api_route("/pay-complete", methods=["GET", "POST"], response_class=HTMLResponse)
 async def pay_complete():
@@ -316,58 +321,43 @@ async def pay_complete():
 </html>"""
 
 # ==================================================
-# 4. KICC Webhook(노티) 수신 API
+# 4. KICC Webhook(노티) 수신 API (acquirerName 최우선 파싱)
 # ==================================================
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
+    global latest_payment
     try:
-        raw_body = await request.body()
-        body_str = raw_body.decode("utf-8", errors="ignore")
-        
-        # 1) Form-data 또는 JSON 파싱
         content_type = request.headers.get("content-type", "")
-        data = {}
         if "application/json" in content_type:
             data = await request.json()
         else:
-            from urllib.parse import parse_qs
-            parsed = parse_qs(body_str)
-            data = {k: v[0] for k, v in parsed.items()}
+            form_data = await request.form()
+            data = dict(form_data)
 
-        print("\n================ [KICC Webhook Raw Data] ================")
+        print("\n====== [KICC Webhook Received Data] ======")
         print(data)
-        print("========================================================\n")
+        print("==========================================\n")
 
-        # 소문자 변환 정규화
-        lower_data = {str(k).lower(): str(v).strip() for k, v in data.items() if v}
+        # 대소문자 구분을 없애기 위한 소문자 정규화 딕셔너리
+        lower_data = {str(k).lower(): v for k, v in data.items() if v}
 
         res_cd = lower_data.get("rescd") or lower_data.get("res_cd")
         shop_order_no = lower_data.get("shoporderno") or lower_data.get("shop_order_no")
         
-        # 매입 카드사 추출 (모든 필드 포괄 검색)
+        # acquirerName 최우선 추출 -> 없으면 대체 매입사명 필드 추출
         card_name = (
-            lower_data.get("acquirername")
+            lower_data.get("acquirername")       # acquirerName
             or lower_data.get("acquirer_name")
-            or lower_data.get("cardmgbnm")
+            or lower_data.get("cardmgbnm")       # cardMgbNm (매입사명)
             or lower_data.get("card_mgb_nm")
-            or lower_data.get("cardpubnm")
+            or lower_data.get("cardpubnm")       # cardPubNm (발급사명)
             or lower_data.get("card_pub_nm")
             or lower_data.get("cardname")
             or lower_data.get("card_name")
             or lower_data.get("cardnm")
-            or lower_data.get("fn_nm")
+            or "신용카드"
         )
-
-        # 만약 이름 필드가 없고 카드사 코드(fn_cd 등)만 넘어왔을 때의 매핑 테이블
-        if not card_name:
-            fn_cd = lower_data.get("fn_cd") or lower_data.get("card_code")
-            card_code_map = {
-                "01": "비씨카드", "02": "국민카드", "03": "하나카드",
-                "04": "삼성카드", "06": "신한카드", "07": "현대카드",
-                "08": "롯데카드", "11": "농협카드", "12": "수협카드"
-            }
-            card_name = card_code_map.get(fn_cd, "신용카드")
-
+        
         card_no = (
             lower_data.get("cardno") 
             or lower_data.get("card_no") 
@@ -375,11 +365,13 @@ async def kicc_webhook(request: Request):
             or "****-****-****-****"
         )
 
-        if res_cd == "0000" and shop_order_no:
-            if shop_order_no in order_db:
+        if res_cd == "0000":
+            latest_payment["status"] = "SUCCESS"
+            latest_payment["card_name"] = str(card_name)
+            latest_payment["card_no"] = str(card_no)
+
+            if shop_order_no and shop_order_no in order_db:
                 order_db[shop_order_no]["status"] = "PAID"
-                order_db[shop_order_no]["card_name"] = card_name
-                order_db[shop_order_no]["card_no"] = card_no
 
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
@@ -388,10 +380,20 @@ async def kicc_webhook(request: Request):
         return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
 
 # ==================================================
-# 5. 주문번호 기반 상태 조회 API
+# 5. 상태 조회 및 리셋 API
 # ==================================================
 @app.get("/api/payment/status")
-async def get_payment_status(orderNo: str):
-    if orderNo in order_db:
-        return order_db[orderNo]
-    return {"status": "PENDING"}
+async def get_payment_status():
+    return latest_payment
+
+@app.post("/api/payment/reset")
+async def reset_payment():
+    global latest_payment
+    latest_payment = {
+        "status": "PENDING",
+        "amount": 0,
+        "volume": "",
+        "card_name": "",
+        "card_no": ""
+    }
+    return {"result": "ok"}
