@@ -1,5 +1,5 @@
 import uuid
-import httpx
+import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
@@ -7,9 +7,9 @@ from pydantic import BaseModel
 app = FastAPI(title="Kiosk Payment Service")
 
 # --------------------------------------------------
-# 🔑 KICC 가이드 문서 규격 설정 및 충전 단가 설정
+# 🔑 KICC MID 원복 및 기본 설정
 # --------------------------------------------------
-MALL_ID = "T0022488"  # 가맹점 MID
+MALL_ID = "T0022488"  # ★ 원래 사용하시던 MID로 원복
 KICC_API_URL = "https://testpgapi.easypay.co.kr/directapi/trades/directSmsUrlPayReg"
 BASE_URL = "https://qrtetst.onrender.com"
 
@@ -209,7 +209,7 @@ async def read_root():
 </html>"""
     return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
-# 2. KICC 결제 URL 생성 요청 API
+# 2. KICC 결제 URL 생성 API
 @app.post("/api/kicc/create-order")
 async def create_kicc_order(pay_req: PayRequest):
     global latest_payment
@@ -218,47 +218,46 @@ async def create_kicc_order(pay_req: PayRequest):
     
     order_no = f"ORD_{uuid.uuid4().hex[:12].upper()}"
     
-    # KICC Direct API 필수 필드(buyerNm 등) 누락 없이 설정
     payload = {
         "directRegInfo": {
-            "mallId": MALL_ID,
-            "regTxtype": "52",       # 52: 결제 URL 생성요청
-            "regSubtype": "10",      # 10: 신규등록
+            "mallId": MALL_ID,                       # T0022488 적용
+            "regTxtype": "52",                      # 결제 URL 생성요청
+            "regSubtype": "10",                     # 신규등록
             "amount": pay_req.amount,
             "currency": "00",
-            "payCode": "00"
+            "payCode": "00",
+            "sndUrl": f"{BASE_URL}/pay-complete",     # 결제 완료 이동 주소
+            "notiUrl": f"{BASE_URL}/api/kicc/webhook" # 결제 상태 알림 주소
         },
         "directOrderInfo": {
             "shopOrderNo": order_no,
-            "goodsName": f"전기차 충전 {pay_req.volume}",
-            "goodsAmount": pay_req.amount,
-            "buyerNm": "고객"        # ★ 필수 파라미터 보완
+            "goodsName": f"EV_{pay_req.volume}",        # 영문/숫자 형태의 안전한 상품명
+            "goodsAmount": pay_req.amount
         }
     }
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(KICC_API_URL, json=payload)
-            res_data = response.json()
+        response = requests.post(KICC_API_URL, json=payload, timeout=10)
+        res_data = response.json()
 
-            print("[KICC Response]:", res_data)
+        print("[KICC Response]:", res_data)
 
-            if res_data.get("resCd") == "0000":
-                order_db[order_no] = {
-                    "status": "PENDING", 
-                    "amount": pay_req.amount,
-                    "volume": pay_req.volume
-                }
-                return {
-                    "success": True,
-                    "orderNo": order_no,
-                    "payUrl": res_data.get("authPageUrl")
-                }
-            else:
-                return {
-                    "success": False, 
-                    "msg": f"[{res_data.get('resCd')}] {res_data.get('resMsg')}"
-                }
+        if res_data.get("resCd") == "0000":
+            order_db[order_no] = {
+                "status": "PENDING", 
+                "amount": pay_req.amount,
+                "volume": pay_req.volume
+            }
+            return {
+                "success": True,
+                "orderNo": order_no,
+                "payUrl": res_data.get("authPageUrl")
+            }
+        else:
+            return {
+                "success": False, 
+                "msg": f"[{res_data.get('resCd')}] {res_data.get('resMsg')}"
+            }
     except Exception as e:
         return {"success": False, "msg": str(e)}
 
@@ -286,7 +285,7 @@ async def pay_complete():
 </body>
 </html>"""
 
-# 4. KICC Webhook(노티) 수신
+# 4. KICC Webhook(노티) 수신 API
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
     global latest_payment
