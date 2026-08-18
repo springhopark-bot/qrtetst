@@ -1,8 +1,9 @@
 import uuid
+import json # 👈 JSON 처리용 모듈 추가
 import requests
 from urllib.parse import parse_qs
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi import FastAPI, Request, Response # 👈 Response 추가
+from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse # 👈 JSONResponse 추가
 from pydantic import BaseModel
 
 app = FastAPI(title="Kiosk Payment Service")
