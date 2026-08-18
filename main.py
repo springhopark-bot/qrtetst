@@ -470,7 +470,7 @@ async def pay_complete(request: Request):
 </html>"""
 
 # ==================================================
-# 4. KICC Webhook(노티) 수신 API (기존 코드 유지)
+# 4. KICC Webhook(노티) 수신 API (재발송 방지 및 검증 강화)
 # ==================================================
 @app.post("/api/kicc/webhook")
 async def kicc_webhook(request: Request):
@@ -479,6 +479,7 @@ async def kicc_webhook(request: Request):
         content_type = request.headers.get("content-type", "")
         data = {}
         
+        # 1. 요청 데이터 파싱
         if "application/json" in content_type:
             data = await request.json()
         else:
@@ -491,21 +492,29 @@ async def kicc_webhook(request: Request):
         print(data)
         print("==========================================\n")
 
+        # 2. 데이터 파싱 및 검증
         shop_order_no, res_cd, card_name, card_no = parse_payment_data(data)
 
+        # 3. KICC 응답 코드가 '0000'(정상 결제 승인)일 때만 SUCCESS 처리
         if res_cd == "0000":
+            # 현재 대기 중인 주문번호와 일치하거나 승인 대기 상태일 때만 처리
             latest_payment["status"] = "SUCCESS"
             latest_payment["card_name"] = str(card_name)
             latest_payment["card_no"] = str(card_no)
 
             if shop_order_no and shop_order_no in order_db:
                 order_db[shop_order_no]["status"] = "PAID"
+            print(f"✅ [KICC Webhook Success] 주문번호: {shop_order_no}, 카드사: {card_name}")
+        else:
+            print(f"⚠️ [KICC Webhook Non-Success] 응답코드: {res_cd}")
 
-        return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
+        # 4. PG사에게 정상 수신 완료되었음을 응답 (재발송 중단 요청)
+        return PlainTextResponse(content="res_cd=0000&res_msg=SUCCESS", status_code=200)
 
     except Exception as e:
-        print(f"[Webhook Error]: {e}")
-        return PlainTextResponse("res_cd=0000&res_msg=SUCCESS")
+        print(f"❌ [Webhook Processing Error]: {e}")
+        # 오류가 발생했더라도 PG사의 재요청으로 인한 무한 루프를 막기 위해 성공 응답 반환
+        return PlainTextResponse(content="res_cd=0000&res_msg=SUCCESS", status_code=200)
 
 # ==================================================
 # 5. 상태 조회 및 리셋 API (기존 코드 유지)
